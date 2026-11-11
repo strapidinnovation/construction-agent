@@ -61,6 +61,8 @@ const EXAMPLES = [
   "list ongoing projects",
   "which projects are delayed?",
   "why is River Bend late?",
+  "find the best lot under 300k in Austin to build and sell",
+  "compare the plans for Brass Buttons and Corral Lane",
 ];
 
 /** The last line of the help message, describing what the bot remembers in the current reply mode. */
@@ -251,8 +253,13 @@ export const CANCEL_BUTTON = "cancel_job";
  * can still be cancelled. The button carries the job's id, so with several
  * jobs queued it cancels exactly this one. Finished/stopped statuses are drawn
  * without the button, which also removes it from the message when edited.
+ * `cancelAction` swaps the button's action id (the agent's missions use their own).
  */
-export function statusBlocks(text: string, cancelId?: string): KnownBlock[] {
+export function statusBlocks(
+  text: string,
+  cancelId?: string,
+  cancelAction: string = CANCEL_BUTTON,
+): KnownBlock[] {
   const blocks: KnownBlock[] = [{ type: "section", text: { type: "mrkdwn", text } }];
   if (cancelId)
     blocks.push({
@@ -260,7 +267,7 @@ export function statusBlocks(text: string, cancelId?: string): KnownBlock[] {
       elements: [
         {
           type: "button",
-          action_id: CANCEL_BUTTON,
+          action_id: cancelAction,
           text: { type: "plain_text", text: "Cancel" },
           style: "danger",
           value: cancelId,
@@ -900,9 +907,10 @@ export function projectAmbiguousReply(query: string, options: Project[]): Reply 
   };
 }
 
-/** A plain summary of the thread memory, for "status". */
-export function statusReply(s: Session): Reply {
+/** A plain summary of the thread memory, for "status". `goal` is the agent's current mission here, if any. */
+export function statusReply(s: Session, goal?: string): Reply {
   const lines: string[] = [];
+  if (goal) lines.push(`• Working on: _${goal}_`);
   if (s.search)
     lines.push(`• Last search: *${s.search.city}*, ${usd(s.search.lo)} to ${usd(s.search.hi)}`);
   if (s.listings.length) lines.push(`• Listings shown: ${s.listings.map(street).join(", ")}`);

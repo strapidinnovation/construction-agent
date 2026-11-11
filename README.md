@@ -2,6 +2,8 @@
 
 SuperAgent is a Slack bot that helps a small builder or developer go from "where can I build?" to "is it worth it?" — and keeps an eye on the projects already under construction. You tag it in a channel in plain English; it finds land, designs houses that fit the local zoning, estimates the cost, plans the construction schedule, writes a feasibility report, and reports on ongoing projects.
 
+Give it a **goal** instead of a single task and it works as an **agent**: it decides on its own which of those skills to use and in what order, checks results, changes course, asks you when it needs to, and asks your approval before any long-running work. It also acts on its own: a daily project digest.
+
 Everything runs on your own machine: the AI model runs locally through [Ollama](https://ollama.com) (Qwen 3.5 9B by default), and the bot connects to Slack without needing a public server.
 
 ```
@@ -12,6 +14,12 @@ Everything runs on your own machine: the AI model runs locally through [Ollama](
 @superagent feasibility report for 8446 Corral Ln
 @superagent which projects are delayed?
 @superagent why is River Bend late?
+
+# goals: the agent plans the steps itself
+@superagent find the best lot under 250k in Austin, TX to build on and sell
+@superagent find land under 300k in Austin and tell me which lots have no flood or soil problems
+@superagent compare the plans for Brass Buttons and Corral Lane — which is the better investment?
+@superagent which delayed projects have open permit issues, and what's the next step on each?
 ```
 
 > All results are planning-level concepts produced with an AI model and public data. They are not construction drawings, bids, appraisals or legal advice.
@@ -28,8 +36,10 @@ Everything runs on your own machine: the AI model runs locally through [Ollama](
 | **Construction timeline** | Every construction task with dates (weekends and US holidays skipped), the critical path, inspections, milestones and risks. Posts a summary and a Gantt-chart PDF                                                                               | ~3 min                        |
 | **Feasibility report**    | Flood zone, soil, Edwards Aquifer and utility checks; values and rents from nearby homes; profit if you **build and sell** vs. yield if you **build and rent**; a go / marginal / no-go verdict, risks and next steps. Posts a summary and a PDF | ~20 s (+ estimate if missing) |
 | **Ongoing projects**      | Lists construction projects with status (on track / at risk / delayed / on hold), current stage and % done; explains what's happening on one project and what's causing a delay                                                                  | ~1–5 s                        |
+| **Goals (the agent)**     | Multi-step requests: searches, site checks, designs, feasibility reports and comparisons chained by the agent itself, with a live checklist, a plan you approve before slow work, and a final recommendation built on the results                | ~20 s (quick tools) to ~1 h   |
+| **Daily digest**          | Every morning (optional) the agent posts which projects need attention, what's holding them up, the next steps and upcoming inspections                                                                                                          | ~30 s                         |
 
-Slow jobs run one at a time in a queue, show live progress with a **Cancel** button, and survive a bot restart.
+Slow jobs run one at a time in a queue, show live progress with a **Cancel** button, and survive a bot restart. So do the agent's missions.
 
 ---
 
@@ -38,7 +48,8 @@ Slow jobs run one at a time in a queue, show live progress with a **Cancel** but
 ```mermaid
 flowchart TB
   U[Slack user<br/>@superagent ...] --> G
-  B[Buttons<br/>Design / Estimate / Timeline / Feasibility / Cancel] --> G
+  B[Buttons<br/>Design / Estimate / Timeline / Feasibility / Cancel<br/>Go / Answer] --> G
+  T[Scheduler<br/>daily digest] --> AG
 
   subgraph Bot["src/slack.ts — Slack gateway (Socket Mode)"]
     G[Receives mentions & clicks<br/>posts replies, status edits, files]
@@ -48,6 +59,11 @@ flowchart TB
   S --> R[router.ts<br/>Qwen turns a message into<br/>intent + details]
   S <--> M[(sessions.ts<br/>conversation memory<br/>data/slack-sessions.json)]
   S --> Q[queue.ts<br/>one slow job at a time]
+  S -->|intent = goal| AG[agent/agent.ts<br/>the agent loop<br/>planner model + tools]
+  AG <--> MI[(agent/missions.ts<br/>data/missions/*.json)]
+  AG --> TL[agent/tools.ts<br/>skills as tools<br/>+ approval budget]
+  TL --> K1 & K6
+  TL --> Q
 
   S --> K1[skills/search.ts]
   S --> K6[skills/projects.ts]
@@ -75,7 +91,37 @@ flowchart TB
 3. **The router** (`src/superagent/router.ts`) makes one structured call to Qwen that fills in a fixed form: the intent (`search`, `design`, `estimate`, `timeline`, `feasibility`, `projects`, `status`, `cancel`, `help`) plus details such as city, budget, property name, start date or project name.
 4. **Quick requests** (search, projects, status, help, cancel) are answered right away.
 5. **Slow jobs** (design, estimate, timeline, feasibility) go into the **job queue** (`queue.ts`). The bot posts a status message with a **Cancel** button and edits it as the job progresses. When the job finishes it posts a summary and uploads the PDF.
-6. **Skills** (`src/superagent/skills/`) are thin wrappers that run the **agents** (`src/agents/`), which do the real work and write their results into a plan folder in `output/`.
+6. **Goals** (intent `goal`: anything that needs several steps or a decision between options) go to **the agent** (`src/superagent/agent/`), described below.
+7. **Skills** (`src/superagent/skills/`) are thin wrappers that run the **agents** (`src/agents/`), which do the real work and write their results into a plan folder in `output/`.
+
+### The agent
+
+Single requests take the fast path above: the router picks one skill. Goals go to an agent that works out the steps itself — the standard tool-calling loop:
+
+1. The planner model (`PLANNER_MODEL`) gets the goal, everything done so far in this mission, and the list of **tools**.
+2. It answers with tool calls (e.g. `search_land("Austin, TX", "under 250k")`) or with its final answer.
+3. Code checks each call against the tool's schema, runs it, and adds a short result to the conversation. Bad calls get a specific error back so the model can correct itself.
+4. Repeat until the model answers. Its reasoning (thinking) is on by default; with a 9B model this was the difference between muddled and correct final answers.
+
+| Tool                                                                   | Kind                      | What it does                                                                         |
+| ---------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------ |
+| `search_land`                                                          | quick                     | Land listings in a city and budget (posts them with links)                           |
+| `check_site`                                                           | quick                     | Flood, soil, aquifer and utility flags for up to 10 lots, without designing anything |
+| `list_saved_plans`, `compare_plans`                                    | quick                     | Which properties have plans; a ranked side-by-side table built by code               |
+| `list_projects`, `project_details`                                     | quick                     | Project status, delay causes, open issues and next steps                             |
+| `design_house`, `estimate_cost`, `plan_timeline`, `feasibility_report` | slow (minutes, via queue) | The existing skills; results and PDFs are posted as usual                            |
+| `propose_plan`, `ask_user`                                             | control                   | Pause the mission for approval or an answer                                          |
+
+**What code guarantees, whatever the model decides:**
+
+- **Approval before slow work.** Slow tools only run after you click **Go** on a plan that lists them, and only as many of each kind as you approved (at most 3 designs and 9 slow steps per plan). Reply to the plan instead of clicking Go to change it.
+- **Limits.** At most 25 decisions per mission; then it must answer with what it has. The same call twice in a row is refused. One mission per conversation at a time.
+- **Numbers from tools.** Comparison tables are built by code from the saved reports; the model is told to use only tool results.
+- **No dead ends.** If the model asks a clarifying question as a plain reply, code turns it into `ask_user`, so your answer continues the same mission.
+
+**Missions** (`agent/missions.ts`) record each goal: the conversation with the model, the checklist shown in Slack, what was approved, and what it's waiting for. They are saved to `data/missions/<id>.json` after every step, so a mission survives a restart (a running job is started again) and each file is a readable log of what the agent decided and why.
+
+**Proactive:** with `DIGEST_CHANNEL` set, the scheduler (`agent/schedule.ts`) starts a mission every morning to brief the team on projects that need attention. Scheduled missions only get quick tools, since nobody is there to approve a plan.
 
 ### Design principles
 
@@ -105,6 +151,16 @@ flowchart TB
 | `superagent/slackUi.ts`    | All Slack message text, layouts (Block Kit) and buttons                                                                                                          |
 | `superagent/skills/*`      | One file per skill: search, design, estimate, timeline, feasibility, projects                                                                                    |
 
+### The agent — `src/superagent/agent/`
+
+| File           | Responsibility                                                                                                                |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `agent.ts`     | The agent loop: asks the planner model for the next step, runs tools, enforces limits; start, approve, answer, cancel, resume |
+| `tools.ts`     | The skills as tools (schemas, short results for the model), the approval budget for slow jobs, `propose_plan`, `ask_user`     |
+| `missions.ts`  | Mission state and log, saved to `data/missions/<id>.json`                                                                     |
+| `missionUi.ts` | Slack layouts: live checklist, plan with Go / Cancel, questions with answer buttons, comparison table, final answer           |
+| `schedule.ts`  | Proactive work: the daily project digest                                                                                      |
+
 ### Agents — `src/agents/`
 
 | Agent                | What it does                                                                                                                                                                                            |
@@ -120,12 +176,12 @@ flowchart TB
 
 ### Shared code — `src/`
 
-| File                                        | Responsibility                                                                                                        |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `llm.ts`                                    | Ollama calls: `chatJson` (structured JSON) and `chatText` (streaming, used for drawing)                               |
-| `report.ts`                                 | HTML page template and styles shared by all reports (with tabs between Plan, Cost estimate, Timeline and Feasibility) |
-| `refreshReports.ts`                         | Rebuilds every HTML report in a plan folder from its saved JSON                                                       |
-| `budget.ts`, `listingFormat.ts`, `paths.ts` | Budget parsing, listing formatting, project paths                                                                     |
+| File                                        | Responsibility                                                                                                                |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `llm.ts`                                    | Ollama calls: `chatJson` (structured JSON), `chatText` (streaming, used for drawing) and `chatTools` (the agent's tool calls) |
+| `report.ts`                                 | HTML page template and styles shared by all reports (with tabs between Plan, Cost estimate, Timeline and Feasibility)         |
+| `refreshReports.ts`                         | Rebuilds every HTML report in a plan folder from its saved JSON                                                               |
+| `budget.ts`, `listingFormat.ts`, `paths.ts` | Budget parsing, listing formatting, project paths                                                                             |
 
 ---
 
@@ -137,6 +193,8 @@ flowchart TB
 | `data/projects/*.json`           | Ongoing construction projects (currently dummy data): dates, 12 standard stages, issues with days of delay, inspections, site log                                                       |
 | `data/feasibility-defaults.json` | Assumptions for the feasibility report: loan terms, fees, vacancy, verdict thresholds, typical build cost — edit to match how you work                                                  |
 | `data/slack-sessions.json`       | The bot's conversation memory (git-ignored)                                                                                                                                             |
+| `data/missions/<id>.json`        | The agent's missions: goal, every model decision and tool result, checklist, approvals (git-ignored)                                                                                    |
+| `data/digest.json`               | Date of the last daily digest (git-ignored)                                                                                                                                             |
 | `output/<date>_<address>/`       | One folder per design: `plan.svg/.html/.pdf/.png`, `strategy.json`, `estimate.json` + `materials.*`, `timeline.json` + `timeline.*`, `feasibility.json` + `feasibility.*` (git-ignored) |
 
 ### External data sources
@@ -191,6 +249,10 @@ cp .env.example .env   # then fill in the Slack tokens
 | `DESIGN_MODEL`                       | `qwen3.5:9b`  | Model that plans the site and draws the house                                                                                                                        |
 | `ESTIMATE_MODEL`                     | `qwen3.5:9b`  | Model for cost estimates and timelines                                                                                                                               |
 | `DESIGN_THINK`                       | `true`        | Let the model reason before drawing (better plans, ~2–3× slower)                                                                                                     |
+| `PLANNER_MODEL`                      | `qwen3.5:9b`  | Model that drives the agent (chooses tools for goals). A stronger model plans better                                                                                 |
+| `PLANNER_THINK`                      | `true`        | Let the planner reason before each decision (more accurate answers, a few seconds slower)                                                                            |
+| `DIGEST_CHANNEL`                     | —             | Slack channel id for the daily project digest; empty = no digest                                                                                                     |
+| `DIGEST_TIME`                        | `08:30`       | When to post the digest (HH:MM, this computer's time zone)                                                                                                           |
 | `CHROME_PATH`                        | macOS default | Path to Chrome, if elsewhere                                                                                                                                         |
 
 ### Run
@@ -209,6 +271,11 @@ The bot prints `SuperAgent is running (reply mode: channel)`, checks that Ollama
 npm run typecheck   # TypeScript
 npm run lint        # ESLint
 npm run format      # Prettier
+
+# Try the agent in the terminal, without Slack (uses its own memory in /tmp):
+node --import tsx src/test-agent.ts "compare the plans for Brass Buttons and Corral Lane"
+node --import tsx src/test-agent.ts --suite                    # a set of goals using quick tools
+node --import tsx src/test-agent.ts "<goal>" --approve         # also click Go (slow jobs really run)
 ```
 
 `src/test-freecad.ts` / `src/floorPlanner.ts` (a FreeCAD floor-plan experiment) and `src/test-architecture.ts` / `src/tools/architecture.ts` (a FLUX image-generation test) are standalone experiments, not part of the bot.
@@ -218,6 +285,7 @@ npm run format      # Prettier
 ## Limitations
 
 - **Model quality.** With a 9B model, drawings can have layout mistakes and cost estimates can be off — the feasibility report flags build costs outside a typical $/sq ft range. Pointing `DESIGN_MODEL` / `ESTIMATE_MODEL` at a stronger model improves results without code changes.
+- **A small planner.** The 9B model plans well for goals like the examples above, but vague goals ("make me money in real estate") get shallow plans. `PLANNER_MODEL` can point at a stronger model.
 - **Austin-first.** Zoning lookups and the Edwards Aquifer check cover Austin, TX; elsewhere the bot uses typical residential defaults and says so.
 - **Planning-level data.** Values use asking prices of sold homes, soil comes from a regional survey (not borings), utility capacity isn't public, and FEMA maps can lag local floodplain maps.
 - **Runs locally.** The bot works while your machine, Ollama and `npm run dev` are running; jobs run one at a time.

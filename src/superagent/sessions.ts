@@ -18,7 +18,8 @@ import { dirname, join } from "node:path";
 import type { Listing } from "../agents/landSearch.ts";
 import { PROJECT_ROOT } from "../paths.ts";
 
-const FILE = join(PROJECT_ROOT, "data", "slack-sessions.json");
+/** SESSIONS_FILE lets test scripts use their own memory file instead of the bot's. */
+const FILE = process.env.SESSIONS_FILE || join(PROJECT_ROOT, "data", "slack-sessions.json");
 
 /** Threads untouched for this long are dropped so the file does not grow forever. */
 const MAX_AGE_DAYS = 30;

@@ -1,10 +1,52 @@
-import ollama from "ollama";
+import ollama, { type Message, type Tool } from "ollama";
 
 export const MODEL = "qwen3.5:9b";
 
 export const DESIGN_MODEL = process.env.DESIGN_MODEL || MODEL;
 
 export const ESTIMATE_MODEL = process.env.ESTIMATE_MODEL || MODEL;
+
+/** The model that drives the agent (decides which tools to call). A stronger model plans better. */
+export const PLANNER_MODEL = process.env.PLANNER_MODEL || MODEL;
+
+/**
+ * Let the planner think before each decision. On by default: without it the
+ * 9B model misread numbers in its final answers ("$551k is lower than $418k");
+ * with it, answers were correct and barely slower. PLANNER_THINK=false turns it off.
+ */
+const PLANNER_THINK = process.env.PLANNER_THINK !== "false";
+
+/** Ollama answers one request at a time; behind a long job, a request can wait past the 5-minute header timeout. */
+function isBusyTimeout(err: unknown): boolean {
+  const cause = err instanceof Error ? (err.cause as { code?: string } | undefined) : undefined;
+  return (
+    cause?.code === "UND_ERR_HEADERS_TIMEOUT" ||
+    (err instanceof Error && /headers timeout/i.test(err.message))
+  );
+}
+
+/**
+ * One step of the agent: send the conversation and the tool list, get back
+ * the model's next message (tool calls, or a final answer). Retried when
+ * Ollama is busy with a long job, since the agent can afford to wait.
+ */
+export async function chatTools(messages: Message[], tools: Tool[]): Promise<Message> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await ollama.chat({
+        model: PLANNER_MODEL,
+        messages,
+        tools,
+        think: PLANNER_THINK,
+        options: { temperature: 0.2, num_ctx: 32768, num_predict: 6000 },
+      });
+      return res.message;
+    } catch (err) {
+      if (attempt >= 4 || !isBusyTimeout(err)) throw err;
+      console.warn(`Planner waited too long for Ollama (busy); retrying (attempt ${attempt + 1})`);
+    }
+  }
+}
 
 export async function chatJson(
   system: string,

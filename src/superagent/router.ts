@@ -37,6 +37,7 @@ export const Request = z.object({
     "feasibility",
     "status",
     "projects",
+    "goal",
     "cancel",
     "help",
   ]),
@@ -65,6 +66,13 @@ intent:
   The status of a named construction project ("status of the River Bend project") is "projects", not "status".
 - "projects": the company's ongoing construction projects: list them, which are delayed or on hold,
   or one project by name ("what's happening with River Bend?", "why is the Blessing Ave job late?").
+- "goal": a request that needs SEVERAL steps or a decision between options, which the agent works out on its own:
+  comparing or ranking properties, plans or projects ("compare River Bend and Brass Buttons", "which plan makes the most money?"),
+  finding the best option ("find me the best lot under 300k in Austin to build and sell"),
+  combining actions ("find land in Austin and check which lots flood", "design and assess Corral Lane"),
+  or questions across several projects ("which delayed projects have permit problems and what's next on each?").
+  A request for ONE action on one thing is that action's intent, not "goal".
+  The same action on SEVERAL properties ("how long would each take to build?", "estimate both") is a "goal".
 - "cancel": stop or cancel the job that is running or waiting ("stop", "cancel", "never mind").
 - "help": greetings, questions about what the bot can do, or anything else.
 
@@ -90,7 +98,7 @@ reuse the missing value from the thread's last search.`;
  * resolve "the second one" or "same city but cheaper" — it can only use what
  * we tell it here, since it has no other memory of the conversation.
  */
-function threadSummary(session: Session): string {
+export function threadSummary(session: Session): string {
   const lines: string[] = [];
   if (session.search)
     lines.push(
@@ -120,11 +128,14 @@ function threadSummary(session: Session): string {
  * `projectNames` are the construction projects in data/projects/. Telling the
  * model their names lets it recognize "tell me about Manchaca" as a project
  * question rather than a land search in the town of Manchaca, TX.
+ * `agentNote` describes the agent's goal that just finished here, so a reply
+ * to it ("yes, run those") is recognized as a follow-up goal.
  */
 export async function route(
   message: string,
   session: Session,
   projectNames: string[] = [],
+  agentNote?: string,
 ): Promise<Request> {
   // The model has no clock, so today's date is included for relative dates
   // like "next month" or "Jan 4" (which year?).
@@ -132,7 +143,8 @@ export async function route(
   const projects = projectNames.length
     ? `\nOngoing construction projects (a message naming one of these, even partly, is a "projects" question): ${projectNames.join(", ")}.\n`
     : "";
-  const user = `Today is ${today}.\n${projects}\nThread so far:\n${threadSummary(session)}\n\nLatest message:\n${message}`;
+  const thread = threadSummary(session) + (agentNote ? `\n${agentNote}` : "");
+  const user = `Today is ${today}.\n${projects}\nThread so far:\n${thread}\n\nLatest message:\n${message}`;
   const raw = await chatJson(SYSTEM, user, z.toJSONSchema(Request));
   return Request.parse(JSON.parse(raw));
 }
