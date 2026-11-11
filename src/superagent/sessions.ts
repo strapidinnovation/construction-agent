@@ -9,7 +9,7 @@
  * means whichever of these the bot is using.
  *
  * The memory lives in a Map while the bot runs and is also written to
- * data/slack-sessions.json, so a restart of `npm run slack` does not forget
+ * data/slack-sessions.json, so a restart of `npm run dev` does not forget
  * ongoing conversations.
  */
 import { existsSync, mkdirSync, readFileSync } from "node:fs";

@@ -1,5 +1,5 @@
 /**
- * Slack gateway for SuperAgent. Start it with `npm run slack`.
+ * Slack gateway for SuperAgent. Start it with `npm run dev`.
  *
  * This file is the only place that talks to Slack. It:
  *   - connects to Slack using Socket Mode,
