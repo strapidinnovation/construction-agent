@@ -4,8 +4,8 @@
  *
  * Each tool has:
  *   - a name and a description the model reads to decide when to use it,
- *   - an input schema (zod), sent to the model as JSON Schema. Every call is
- *     checked against it in code; a bad call gets a clear error back, so the
+ *   - an input schema (zod), which the Agent SDK sends to the model. Every call
+ *     is checked against it in code; a bad call gets a clear error back, so the
  *     model can correct itself instead of the bot crashing,
  *   - `label`: the line shown in the Slack checklist while it runs,
  *   - `run`: does the work and returns a SHORT result for the model. Short
@@ -26,7 +26,6 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Tool } from "ollama";
 import { z } from "zod";
 import type { Feasibility } from "../../agents/feasibility.ts";
 import type { Listing } from "../../agents/landSearch.ts";
@@ -38,7 +37,13 @@ import { findPlanByName, listingOfPlan, savedPlans, streetOf } from "../plans.ts
 import type { JobKind } from "../queue.ts";
 import { getSession, updateSession } from "../sessions.ts";
 import { searchLand } from "../skills/search.ts";
-import { findProject, listProjects, stageLabel, statusText } from "../skills/projects.ts";
+import {
+  findProject,
+  listProjects,
+  PROJECT_FILTERS,
+  stageLabel,
+  statusText,
+} from "../skills/projects.ts";
 import { listingsReply, MAX_LISTINGS, missingSearchInfo, street } from "../slackUi.ts";
 import {
   queueDesign,
@@ -84,12 +89,14 @@ export type ToolOutcome = {
 
 export type AgentTool = {
   name: string;
+  /** What the model reads to decide when to use the tool. */
+  description: string;
+  /** The input the model must send (agent.ts registers it with the Agent SDK). */
+  params: z.ZodObject;
   /** The kind of queued job this tool runs, for slow tools. */
   slow?: JobKind;
   /** Control tools need a person to answer, so scheduled (unattended) missions can't use them. */
   needsUser?: boolean;
-  /** The definition sent to the model. */
-  schema: Tool;
   label: (args: unknown) => string;
   run: (args: unknown, env: ToolEnv) => Promise<ToolOutcome>;
 };
@@ -99,13 +106,6 @@ const fail = (error: string, done?: string): ToolOutcome => ({
   failed: true,
   done,
 });
-
-/** Turn a zod schema into the JSON Schema Ollama sends to the model. */
-function parameters(schema: z.ZodObject): Tool["function"]["parameters"] {
-  const json = z.toJSONSchema(schema) as Record<string, unknown>;
-  delete json.$schema;
-  return json as Tool["function"]["parameters"];
-}
 
 /** Define a tool. Its input is checked against `params` before `run` is called. */
 function defineTool<S extends z.ZodObject>(def: {
@@ -119,16 +119,10 @@ function defineTool<S extends z.ZodObject>(def: {
 }): AgentTool {
   return {
     name: def.name,
+    description: def.description,
+    params: def.params,
     slow: def.slow,
     needsUser: def.needsUser,
-    schema: {
-      type: "function",
-      function: {
-        name: def.name,
-        description: def.description,
-        parameters: parameters(def.params),
-      },
-    },
     label: (args) => {
       const parsed = def.params.safeParse(args ?? {});
       return parsed.success ? def.label(parsed.data) : def.name;
@@ -501,11 +495,14 @@ const listProjectsTool = defineTool({
     "List the company's ongoing construction projects with status, days late, current stage and number of open issues, most urgent first.",
   params: z.object({
     filter: z
-      .enum(["all", "behind", "on-hold"])
+      .enum(PROJECT_FILTERS)
       .optional()
-      .describe('"behind" = delayed or at risk, "on-hold" = paused, default "all"'),
+      .describe(
+        '"delayed" = past planned dates, "behind" = delayed or at risk, "attention" = delayed, at risk or on hold, "on-hold" = paused, default "all"',
+      ),
   }),
-  label: (a) => (a.filter === "behind" ? "Listing projects behind schedule" : "Listing projects"),
+  label: (a) =>
+    a.filter && a.filter !== "all" ? `Listing projects (${a.filter})` : "Listing projects",
   async run(a) {
     const projects = listProjects(a.filter ?? "all").map((p) => ({
       project: p.data.name,
@@ -834,7 +831,8 @@ const proposePlanTool = defineTool({
     await saveMission(mission);
     await ctx.out.reply(planReply(mission, a.summary, lines, minutes));
     return {
-      result: null,
+      result:
+        "The plan is shown to the user. Stop now; their answer will come as the next message.",
       pause: "approval",
       done: `Waiting for your OK on the plan (~${minutes} min)`,
     };
@@ -857,7 +855,12 @@ const askUserTool = defineTool({
     mission.pendingQuestion = { question: a.question, options };
     await saveMission(mission);
     await ctx.out.reply(questionReply(mission, a.question, options));
-    return { result: null, pause: "answer", done: `Asked: ${a.question}` };
+    return {
+      result:
+        "The question is shown to the user. Stop now; their answer will come as the next message.",
+      pause: "answer",
+      done: `Asked: ${a.question}`,
+    };
   },
 });
 
@@ -875,8 +878,6 @@ export const TOOLS: AgentTool[] = [
   proposePlanTool,
   askUserTool,
 ];
-
-export const TOOLS_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
 /** The tools a mission may use: scheduled missions get only the quick ones. */
 export function toolsFor(m: Mission): AgentTool[] {

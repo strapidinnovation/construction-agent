@@ -1,51 +1,54 @@
-import ollama, { type Message, type Tool } from "ollama";
-
-export const MODEL = "qwen3.5:9b";
-
-export const DESIGN_MODEL = process.env.DESIGN_MODEL || MODEL;
-
-export const ESTIMATE_MODEL = process.env.ESTIMATE_MODEL || MODEL;
-
-/** The model that drives the agent (decides which tools to call). A stronger model plans better. */
-export const PLANNER_MODEL = process.env.PLANNER_MODEL || MODEL;
-
 /**
- * Let the planner think before each decision. On by default: without it the
- * 9B model misread numbers in its final answers ("$551k is lower than $418k");
- * with it, answers were correct and barely slower. PLANNER_THINK=false turns it off.
+ * The skills' model calls go through the two functions here:
+ *   - chatJson: a reply that must match a JSON Schema (router, estimator, ...),
+ *   - chatText: long free text with progress (the house designer).
+ * (The agent talks to Claude through the Agent SDK instead; see agent/agent.ts.)
+ *
+ * Two backends can answer them, chosen with LLM_BACKEND:
+ *   - "claude-code" (default): Claude, through the Claude Code command line and
+ *     the subscription logged in on this computer (see claudeCode.ts),
+ *   - "ollama": a local model such as qwen3.5:9b, run by Ollama.
  */
-const PLANNER_THINK = process.env.PLANNER_THINK !== "false";
+import ollama from "ollama";
+import { runClaude } from "./claudeCode.ts";
 
-/** Ollama answers one request at a time; behind a long job, a request can wait past the 5-minute header timeout. */
-function isBusyTimeout(err: unknown): boolean {
-  const cause = err instanceof Error ? (err.cause as { code?: string } | undefined) : undefined;
-  return (
-    cause?.code === "UND_ERR_HEADERS_TIMEOUT" ||
-    (err instanceof Error && /headers timeout/i.test(err.message))
-  );
+export const BACKEND: "claude-code" | "ollama" =
+  process.env.LLM_BACKEND === "ollama" ? "ollama" : "claude-code";
+const CLAUDE = BACKEND === "claude-code";
+
+/** A model name from .env, or `fallback`. Ollama names ("qwen3.5:9b", always with a ":tag") can't run on Claude. */
+function claudeModel(name: string, fallback: string): string {
+  const value = process.env[name]?.trim();
+  return value && !value.includes(":") ? value : fallback;
 }
 
 /**
- * One step of the agent: send the conversation and the tool list, get back
- * the model's next message (tool calls, or a final answer). Retried when
- * Ollama is busy with a long job, since the agent can afford to wait.
+ * A model name from .env, or the backend's default. On Claude, Ollama names
+ * are skipped, so a .env written for Ollama doesn't break the switch.
  */
-export async function chatTools(messages: Message[], tools: Tool[]): Promise<Message> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const res = await ollama.chat({
-        model: PLANNER_MODEL,
-        messages,
-        tools,
-        think: PLANNER_THINK,
-        options: { temperature: 0.2, num_ctx: 32768, num_predict: 6000 },
-      });
-      return res.message;
-    } catch (err) {
-      if (attempt >= 4 || !isBusyTimeout(err)) throw err;
-      console.warn(`Planner waited too long for Ollama (busy); retrying (attempt ${attempt + 1})`);
-    }
-  }
+function modelSetting(name: string, claudeDefault: string, ollamaDefault: string): string {
+  if (CLAUDE) return claudeModel(name, claudeDefault);
+  return process.env[name]?.trim() || ollamaDefault;
+}
+
+/** General-purpose model: project summaries, delay explanations, feasibility verdicts. */
+export const MODEL = CLAUDE ? "sonnet" : "qwen3.5:9b";
+
+/** Reads every Slack message to decide what is wanted, so it should be fast. */
+export const ROUTER_MODEL = modelSetting("ROUTER_MODEL", "haiku", MODEL);
+
+export const DESIGN_MODEL = modelSetting("DESIGN_MODEL", "sonnet", MODEL);
+
+export const ESTIMATE_MODEL = modelSetting("ESTIMATE_MODEL", "sonnet", MODEL);
+
+/** The model that drives the agent. Always Claude: the Agent SDK only runs Claude models. */
+export const PLANNER_MODEL = claudeModel("PLANNER_MODEL", "sonnet");
+
+/** JSON Schemas from zod carry a "$schema" key, which isn't part of the form itself. */
+function withoutMeta(schema: object): object {
+  const copy = { ...(schema as Record<string, unknown>) };
+  delete copy.$schema;
+  return copy;
 }
 
 export async function chatJson(
@@ -54,6 +57,18 @@ export async function chatJson(
   schema: object,
   opts: { model?: string; numPredict?: number; numCtx?: number; temperature?: number } = {},
 ): Promise<string> {
+  if (CLAUDE) {
+    const reply = await runClaude({
+      model: opts.model ?? MODEL,
+      system,
+      prompt: user,
+      schema: withoutMeta(schema),
+      effort: "low",
+    });
+    if (reply.truncated) throw new Error("The model's reply hit the output limit and was cut off.");
+    // Callers parse the JSON text themselves, as with Ollama.
+    return JSON.stringify(reply.structured);
+  }
   const res = await ollama.chat({
     model: opts.model ?? MODEL,
     messages: [
@@ -82,6 +97,16 @@ export async function chatText(
   user: string,
   opts: { think?: boolean; onProgress?: (p: Progress) => void } = {},
 ): Promise<{ content: string; truncated: boolean }> {
+  if (CLAUDE) {
+    const reply = await runClaude({
+      model,
+      system,
+      prompt: user,
+      effort: opts.think ? undefined : "low",
+      onText: (chars) => opts.onProgress?.({ phase: "writing", chars }),
+    });
+    return { content: reply.text, truncated: reply.truncated };
+  }
   const stream = await ollama.chat({
     model,
     messages: [

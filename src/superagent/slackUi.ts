@@ -308,7 +308,7 @@ export function limitReply(max: number): Reply {
   };
 }
 
-export function ollamaDownReply(problem: string): Reply {
+export function modelDownReply(problem: string): Reply {
   return { text: `:warning: I can't start that right now: ${problem}` };
 }
 
@@ -716,16 +716,19 @@ function currentStageText(p: Project): string {
 export function projectsListReply(projects: Project[], filter: ProjectFilter): Reply {
   const what = {
     all: "Ongoing projects",
+    delayed: "Delayed projects",
     behind: "Projects behind schedule",
+    attention: "Projects that need attention",
     "on-hold": "Projects on hold",
   }[filter];
-  if (!projects.length)
-    return {
-      text:
-        filter === "all"
-          ? "There are no ongoing projects in data/projects/."
-          : `No ${filter === "behind" ? "projects are behind schedule" : "projects are on hold"} right now.`,
-    };
+  const none = {
+    all: "There are no ongoing projects in data/projects/.",
+    delayed: "No projects are delayed right now.",
+    behind: "No projects are behind schedule right now.",
+    attention: "No projects need attention right now: everything is on track.",
+    "on-hold": "No projects are on hold right now.",
+  }[filter];
+  if (!projects.length) return { text: none };
 
   const blocks: KnownBlock[] = [
     { type: "section", text: { type: "mrkdwn", text: `*${what} (${projects.length})*` } },
@@ -958,6 +961,11 @@ export function errorReply(err: unknown): Reply {
   if (/fetch failed|ECONNREFUSED/i.test(message))
     return {
       text: "My AI model isn't reachable right now (Ollama is not running). Please try again in a bit.",
+    };
+  // A Claude subscription has usage limits that reset after a few hours.
+  if (/usage limit|rate limit|hit your limit|limit reached/i.test(message))
+    return {
+      text: "I've reached my Claude usage limit for now. Please try again later; the limit resets every few hours.",
     };
   return { text: `Something went wrong: ${message}` };
 }

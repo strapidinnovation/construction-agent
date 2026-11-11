@@ -23,8 +23,8 @@ import { existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { DESIGN_MODEL, ESTIMATE_MODEL, MODEL } from "../llm.ts";
 import { answerMission, cancelMission, startMission } from "./agent/agent.ts";
-import { activeMission, recentMission, waitingMission } from "./agent/missions.ts";
-import { checkOllama } from "./health.ts";
+import { activeMission, waitingMission } from "./agent/missions.ts";
+import { checkModels } from "./health.ts";
 import {
   allJobs,
   cancel,
@@ -45,8 +45,10 @@ import {
   findListingByUrl,
   forgetJob,
   getSession,
+  recentAnswer,
   saveJob,
   updateSession,
+  type LastAnswer,
   type ReplyMode,
   type SavedJob,
   type Session,
@@ -59,6 +61,7 @@ import {
   findProject,
   listProjects,
   loadProjects,
+  statusText,
   summarizeProject,
   type Project,
 } from "./skills/projects.ts";
@@ -89,7 +92,7 @@ import {
   noPlanForReply,
   noPlanReply,
   noSuchListingNumberReply,
-  ollamaDownReply,
+  modelDownReply,
   planAmbiguousReply,
   projectAmbiguousReply,
   projectDelayReply,
@@ -109,6 +112,13 @@ import {
 
 /** How many slow jobs one person may have waiting or running at the same time. */
 const MAX_JOBS_PER_USER = 2;
+
+/** A quick answer to remember as the conversation's last answer, for follow-ups. */
+const answered = (request: string, summary: string): LastAnswer => ({
+  request,
+  summary,
+  at: new Date().toISOString(),
+});
 
 /**
  * Where SuperAgent sends its answers for one conversation. src/slack.ts implements
@@ -159,9 +169,9 @@ export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
 
   const session = getSession(ctx.key);
   const projectNames = loadProjects().map((p) => p.data.name);
-  const recent = recentMission(ctx.key);
+  const recent = recentAnswer(session);
   const agentNote = recent
-    ? `The agent just finished the goal "${recent.goal}" and ended its answer with: "${(recent.answer ?? "").slice(-300)}". A reply that continues it ("yes, do that", "now the same for X") is a "goal".`
+    ? `SuperAgent's last answer here was to "${recent.request}": "${recent.summary.slice(-300)}". A reply that continues it with several steps or several things ("yes, do that", "why for each of them", "now the same for X") is a "goal".`
     : undefined;
   const request = await route(text, session, projectNames, agentNote);
   console.log(`  intent: ${JSON.stringify(request)}`);
@@ -170,9 +180,18 @@ export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
   // conversation "status" intent, but with a project name filled in. A project name means
   // the question is about that project.
   if (request.intent === "status" && request.projectName) request.intent = "projects";
+  // "Which projects need attention, and why?" asks for the reasons behind a
+  // whole list, which means reading each project: a job for the agent.
+  if (
+    request.intent === "projects" &&
+    !request.projectName &&
+    request.projectFilter !== "all" &&
+    request.projectTopic === "delay"
+  )
+    request.intent = "goal";
   // The single-property skills work on one property; several named ("Brass
   // Buttons and Corral Lane", "A, B") is a job for the agent.
-  // The same goes for follow-ups to the agent's last goal that point back at
+  // The same goes for follow-ups to the last answer that point back at
   // several things ("how long would each take?", "estimate both of them").
   const singleProperty = ["design", "estimate", "timeline", "feasibility"];
   const several = /,|;|\band\b|&/i.test(request.listing);
@@ -182,7 +201,7 @@ export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
 
   switch (request.intent) {
     case "search":
-      return ctx.out.reply(await search(ctx.key, session, request));
+      return ctx.out.reply(await search(ctx.key, session, request, text));
     case "design":
       return startDesign(
         ctx,
@@ -202,7 +221,7 @@ export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
     case "status":
       return ctx.out.reply(statusReply(session, activeMission(ctx.key)?.goal));
     case "projects":
-      return projects(ctx, session, request);
+      return projects(ctx, session, request, text);
     case "goal":
       await startMission(ctx, text);
       return;
@@ -222,7 +241,12 @@ export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
  * 200k"). The router is asked to do this too; doing it here as well makes it
  * reliable even when the model forgets.
  */
-async function search(key: string, session: Session, request: Request): Promise<Reply> {
+async function search(
+  key: string,
+  session: Session,
+  request: Request,
+  text: string,
+): Promise<Reply> {
   const city = request.city || session.search?.city || "";
   const budget = request.budget || session.search?.budget || "";
   const result = await searchLand(city, budget);
@@ -231,10 +255,12 @@ async function search(key: string, session: Session, request: Request): Promise<
   // Only the listings we actually show are remembered, so "#3"
   // always means the third line of the message the user is looking at.
   const shown = result.listings.slice(0, MAX_LISTINGS);
+  const streets = shown.map((l) => l.address.split(",")[0]).join("; ");
   await updateSession(key, {
     search: { city: result.city, budget, lo: result.lo, hi: result.hi },
     listings: shown,
     selected: undefined,
+    lastAnswer: answered(text, `Showed ${shown.length} listings in ${result.city}: ${streets}.`),
   });
   return listingsReply(shown, result.listings.length, result.city, result.lo, result.hi);
 }
@@ -246,28 +272,48 @@ async function search(key: string, session: Session, request: Request): Promise<
 
 /**
  * Answer a question about ongoing projects:
- * - no project name           -> the list (optionally only behind / on hold),
+ * - no project name           -> the list (optionally filtered, e.g. only delayed),
  * - a name                    -> that project's overview,
  * - a name + "why is it late" -> the delay breakdown.
  * "Why is it late?" without a name uses the project last discussed in this conversation.
  */
-async function projects(ctx: Ctx, session: Session, request: Request): Promise<void> {
-  const name =
-    request.projectName || (request.projectTopic === "delay" ? (session.projectName ?? "") : "");
-  if (!name)
-    return ctx.out.reply(
-      projectsListReply(listProjects(request.projectFilter), request.projectFilter),
-    );
+async function projects(ctx: Ctx, session: Session, request: Request, text: string): Promise<void> {
+  // Only a question about one project ("why is it late?") falls back to the
+  // last project discussed; a filtered list ("which are delayed?") never does.
+  const followUp = request.projectTopic === "delay" && request.projectFilter === "all";
+  const name = request.projectName || (followUp ? (session.projectName ?? "") : "");
+  if (!name) {
+    const list = listProjects(request.projectFilter);
+    const names = list
+      .map((p) => `${p.data.name} (${statusText(p.status)}, ${p.daysLate} days late)`)
+      .join("; ");
+    await updateSession(ctx.key, {
+      lastAnswer: answered(text, `Listed ${list.length} projects: ${names || "none"}.`),
+    });
+    return ctx.out.reply(projectsListReply(list, request.projectFilter));
+  }
 
   const found = findProject(name);
   if (found.kind === "not-found") return ctx.out.reply(projectNotFoundReply(name, found.names));
   if (found.kind === "ambiguous") return ctx.out.reply(projectAmbiguousReply(name, found.options));
-  await showProject(ctx, found.project, request.projectTopic);
+  await showProject(ctx, found.project, request.projectTopic, text);
 }
 
 /** Post one project's overview or delay breakdown, and remember it as the conversation's current project. */
-async function showProject(ctx: Ctx, p: Project, topic: "overview" | "delay"): Promise<void> {
-  await updateSession(ctx.key, { projectName: p.data.name });
+async function showProject(
+  ctx: Ctx,
+  p: Project,
+  topic: "overview" | "delay",
+  text = topic === "delay" ? `Why is ${p.data.name} late?` : `Tell me about ${p.data.name}`,
+): Promise<void> {
+  const what = topic === "delay" ? "why it is late" : "an overview";
+  await updateSession(ctx.key, {
+    projectName: p.data.name,
+    lastAnswer: answered(
+      text,
+      `Showed ${what} of ${p.data.name} (${statusText(p.status)}, ${p.daysLate} days late).`,
+    ),
+  });
   if (topic === "delay") {
     const explanation = p.daysLate > 0 && p.delayCauses.length ? await explainDelay(p) : null;
     return ctx.out.reply(projectDelayReply(p, explanation));
@@ -366,8 +412,8 @@ async function queueJob<R>(ctx: Ctx, job: JobSpec<R>, opts: QueueOpts = {}): Pro
   if (duplicate) return { ok: false, reply: duplicateReply(duplicate) };
   if (jobsForUser(user) >= MAX_JOBS_PER_USER)
     return { ok: false, reply: limitReply(MAX_JOBS_PER_USER) };
-  const problem = await checkOllama(job.models);
-  if (problem) return { ok: false, reply: ollamaDownReply(problem) };
+  const problem = await checkModels(job.models);
+  if (problem) return { ok: false, reply: modelDownReply(problem) };
 
   const id = newJobId();
   if (persist) await saveJob(key, { id, kind: job.kind, user, listing: job.listing, ...job.saved });

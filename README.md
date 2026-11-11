@@ -4,7 +4,7 @@ SuperAgent is a Slack bot that helps a small builder or developer go from "where
 
 Give it a **goal** instead of a single task and it works as an **agent**: it decides on its own which of those skills to use and in what order, checks results, changes course, asks you when it needs to, and asks your approval before any long-running work. It also acts on its own: a daily project digest.
 
-Everything runs on your own machine: the AI model runs locally through [Ollama](https://ollama.com) (Qwen 3.5 9B by default), and the bot connects to Slack without needing a public server.
+The bot runs on your own machine and connects to Slack without needing a public server. Its AI is Claude, used through the Claude Code CLI and your Claude subscription (Sonnet for planning, design and estimates, Haiku for reading messages); it can also run fully locally on [Ollama](https://ollama.com) (Qwen 3.5 9B) with `LLM_BACKEND=ollama`.
 
 ```
 @superagent land around 300k in Austin, TX
@@ -96,12 +96,12 @@ flowchart TB
 
 ### The agent
 
-Single requests take the fast path above: the router picks one skill. Goals go to an agent that works out the steps itself — the standard tool-calling loop:
+Single requests take the fast path above: the router picks one skill. Goals go to an agent that works out the steps itself. The agent runs on the **[Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview)** (the engine behind Claude Code), with SuperAgent's skills served to it as tools from an in-process MCP server:
 
-1. The planner model (`PLANNER_MODEL`) gets the goal, everything done so far in this mission, and the list of **tools**.
-2. It answers with tool calls (e.g. `search_land("Austin, TX", "under 250k")`) or with its final answer.
-3. Code checks each call against the tool's schema, runs it, and adds a short result to the conversation. Bad calls get a specific error back so the model can correct itself.
-4. Repeat until the model answers. Its reasoning (thinking) is on by default; with a 9B model this was the difference between muddled and correct final answers.
+1. Claude (`PLANNER_MODEL`) gets the goal and the list of **tools**.
+2. It calls tools (e.g. `search_land("Austin, TX", "under 250k")`, often several at once) or gives its final answer.
+3. Code checks each call against the tool's schema, runs it, and returns a short result. Bad calls get a specific error back so the model can correct itself.
+4. Repeat until it answers. Claude Code's own tools (files, shell, web) are turned off and no local settings are loaded, so it can only use SuperAgent's tools.
 
 | Tool                                                                   | Kind                      | What it does                                                                         |
 | ---------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------ |
@@ -115,18 +115,18 @@ Single requests take the fast path above: the router picks one skill. Goals go t
 **What code guarantees, whatever the model decides:**
 
 - **Approval before slow work.** Slow tools only run after you click **Go** on a plan that lists them, and only as many of each kind as you approved (at most 3 designs and 9 slow steps per plan). Reply to the plan instead of clicking Go to change it.
-- **Limits.** At most 25 decisions per mission; then it must answer with what it has. The same call twice in a row is refused. One mission per conversation at a time.
+- **Limits.** At most 25 model turns per mission; then it must answer with what it has. The same call twice in a row is refused. One mission per conversation at a time.
 - **Numbers from tools.** Comparison tables are built by code from the saved reports; the model is told to use only tool results.
-- **No dead ends.** If the model asks a clarifying question as a plain reply, code turns it into `ask_user`, so your answer continues the same mission.
+- **No dead ends.** If the model asks a clarifying question as a plain reply, code treats it as a question, so your answer continues the same mission.
 
-**Missions** (`agent/missions.ts`) record each goal: the conversation with the model, the checklist shown in Slack, what was approved, and what it's waiting for. They are saved to `data/missions/<id>.json` after every step, so a mission survives a restart (a running job is started again) and each file is a readable log of what the agent decided and why.
+**Missions** (`agent/missions.ts`) record each goal: the Agent SDK session id, the checklist shown in Slack, what was approved, and what it's waiting for. They are saved to `data/missions/<id>.json` after every step. `propose_plan` and `ask_user` end the model's turn; your answer resumes the saved session, minutes or hours later, even after a restart (an interrupted job can be run again). The full transcript of every decision is in the session file under `~/.claude/projects/`.
 
 **Proactive:** with `DIGEST_CHANNEL` set, the scheduler (`agent/schedule.ts`) starts a mission every morning to brief the team on projects that need attention. Scheduled missions only get quick tools, since nobody is there to approve a plan.
 
 ### Design principles
 
 - **The AI decides and writes; code does the math and checks.** Qwen chooses the site strategy, draws the plan, estimates quantities, lists construction tasks and writes summaries. Code computes footprints, dates, the critical path, costs, profits, verdicts and project status — and validates the model's answers, sending specific errors back for a retry.
-- **Structured output.** Every non-drawing model call uses Ollama's JSON-schema output (schemas defined with `zod`), so replies always have the expected shape.
+- **Structured output.** Every non-drawing model call uses JSON-schema output (schemas defined with `zod`; `--json-schema` on Claude Code, `format` on Ollama), so replies always have the expected shape.
 - **Facts in, prose out.** Summaries (project status, delay explanations, feasibility) are written by Qwen from a fact sheet code prepares, with instructions to use only those facts.
 - **Names, not numbers.** People refer to properties and projects by name ("Corral Lane", "the River Bend job"). Matching is done in code (`match.ts`), including street abbreviations ("Lane" ↔ "Ln") and house numbers, and the bot asks when a name is ambiguous.
 - **Fail soft.** If a public data source is down, that check says "not checked" and the report carries on with lower confidence.
@@ -146,20 +146,20 @@ Single requests take the fast path above: the router picks one skill. Goals go t
 | `superagent/queue.ts`      | One-at-a-time job queue with duplicate detection, per-person limits and cancellation                                                                             |
 | `superagent/match.ts`      | Fuzzy name matching for listings, plans and projects                                                                                                             |
 | `superagent/plans.ts`      | Finds the saved plan folder for a property                                                                                                                       |
-| `superagent/health.ts`     | Checks Ollama is running and the models are downloaded before starting a job                                                                                     |
+| `superagent/health.ts`     | Checks the model backend is ready (Claude Code logged in, or Ollama running with the models) before starting a job                                               |
 | `superagent/render.ts`     | Prints HTML reports to PDF and the plan drawing to PNG with headless Chrome                                                                                      |
 | `superagent/slackUi.ts`    | All Slack message text, layouts (Block Kit) and buttons                                                                                                          |
 | `superagent/skills/*`      | One file per skill: search, design, estimate, timeline, feasibility, projects                                                                                    |
 
 ### The agent — `src/superagent/agent/`
 
-| File           | Responsibility                                                                                                                |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `agent.ts`     | The agent loop: asks the planner model for the next step, runs tools, enforces limits; start, approve, answer, cancel, resume |
-| `tools.ts`     | The skills as tools (schemas, short results for the model), the approval budget for slow jobs, `propose_plan`, `ask_user`     |
-| `missions.ts`  | Mission state and log, saved to `data/missions/<id>.json`                                                                     |
-| `missionUi.ts` | Slack layouts: live checklist, plan with Go / Cancel, questions with answer buttons, comparison table, final answer           |
-| `schedule.ts`  | Proactive work: the daily project digest                                                                                      |
+| File           | Responsibility                                                                                                                                |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent.ts`     | Runs missions on the Claude Agent SDK: serves the tools, enforces limits, pauses and resumes sessions; start, approve, answer, cancel, resume |
+| `tools.ts`     | The skills as tools (schemas, short results for the model), the approval budget for slow jobs, `propose_plan`, `ask_user`                     |
+| `missions.ts`  | Mission state and log, saved to `data/missions/<id>.json`                                                                                     |
+| `missionUi.ts` | Slack layouts: live checklist, plan with Go / Cancel, questions with answer buttons, comparison table, final answer                           |
+| `schedule.ts`  | Proactive work: the daily project digest                                                                                                      |
 
 ### Agents — `src/agents/`
 
@@ -176,12 +176,13 @@ Single requests take the fast path above: the router picks one skill. Goals go t
 
 ### Shared code — `src/`
 
-| File                                        | Responsibility                                                                                                                |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `llm.ts`                                    | Ollama calls: `chatJson` (structured JSON), `chatText` (streaming, used for drawing) and `chatTools` (the agent's tool calls) |
-| `report.ts`                                 | HTML page template and styles shared by all reports (with tabs between Plan, Cost estimate, Timeline and Feasibility)         |
-| `refreshReports.ts`                         | Rebuilds every HTML report in a plan folder from its saved JSON                                                               |
-| `budget.ts`, `listingFormat.ts`, `paths.ts` | Budget parsing, listing formatting, project paths                                                                             |
+| File                                        | Responsibility                                                                                                               |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `llm.ts`                                    | The skills' model calls: `chatJson` (structured JSON) and `chatText` (streaming, used for drawing), on Claude Code or Ollama |
+| `claudeCode.ts`                             | Runs one locked-down `claude -p` call (no built-in tools or local settings) and checks Claude Code is logged in              |
+| `report.ts`                                 | HTML page template and styles shared by all reports (with tabs between Plan, Cost estimate, Timeline and Feasibility)        |
+| `refreshReports.ts`                         | Rebuilds every HTML report in a plan folder from its saved JSON                                                              |
+| `budget.ts`, `listingFormat.ts`, `paths.ts` | Budget parsing, listing formatting, project paths                                                                            |
 
 ---
 
@@ -193,7 +194,7 @@ Single requests take the fast path above: the router picks one skill. Goals go t
 | `data/projects/*.json`           | Ongoing construction projects (currently dummy data): dates, 12 standard stages, issues with days of delay, inspections, site log                                                       |
 | `data/feasibility-defaults.json` | Assumptions for the feasibility report: loan terms, fees, vacancy, verdict thresholds, typical build cost — edit to match how you work                                                  |
 | `data/slack-sessions.json`       | The bot's conversation memory (git-ignored)                                                                                                                                             |
-| `data/missions/<id>.json`        | The agent's missions: goal, every model decision and tool result, checklist, approvals (git-ignored)                                                                                    |
+| `data/missions/<id>.json`        | The agent's missions: goal, Agent SDK session id, checklist, approvals (git-ignored)                                                                                                    |
 | `data/digest.json`               | Date of the last daily digest (git-ignored)                                                                                                                                             |
 | `output/<date>_<address>/`       | One folder per design: `plan.svg/.html/.pdf/.png`, `strategy.json`, `estimate.json` + `materials.*`, `timeline.json` + `timeline.*`, `feasibility.json` + `feasibility.*` (git-ignored) |
 
@@ -217,7 +218,7 @@ Texas does not disclose sale prices, so "sold" comparables use the homes' last a
 
 - **Node.js 22+**
 - **Python 3** (for the Realtor.com scraper)
-- **[Ollama](https://ollama.com)** with the model pulled: `ollama pull qwen3.5:9b`
+- **[Claude Code](https://docs.claude.com/en/docs/claude-code)** logged in with a Claude subscription: `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in. (Or, with `LLM_BACKEND=ollama`, **[Ollama](https://ollama.com)** with `ollama pull qwen3.5:9b`.)
 - **Google Chrome** (used headless to make PDFs and images; set `CHROME_PATH` if it isn't in `/Applications`)
 - A **Slack workspace** where you can create an app
 
@@ -246,10 +247,12 @@ cp .env.example .env   # then fill in the Slack tokens
 | ------------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | —             | Slack credentials (required)                                                                                                                                         |
 | `SLACK_REPLY_MODE`                   | `channel`     | `channel`: reply in the channel, one shared memory per channel · `user`: reply in the channel, a memory per person · `thread`: reply in threads, a memory per thread |
-| `DESIGN_MODEL`                       | `qwen3.5:9b`  | Model that plans the site and draws the house                                                                                                                        |
-| `ESTIMATE_MODEL`                     | `qwen3.5:9b`  | Model for cost estimates and timelines                                                                                                                               |
-| `DESIGN_THINK`                       | `true`        | Let the model reason before drawing (better plans, ~2–3× slower)                                                                                                     |
-| `PLANNER_MODEL`                      | `qwen3.5:9b`  | Model that drives the agent (chooses tools for goals). A stronger model plans better                                                                                 |
+| `LLM_BACKEND`                        | `claude-code` | `claude-code`: Claude through the Claude Code CLI and the logged-in subscription · `ollama`: a local model through Ollama                                            |
+| `PLANNER_MODEL`                      | `sonnet`      | Claude model that drives the agent (chooses tools for goals). Always Claude, via the Agent SDK, even with `LLM_BACKEND=ollama`                                       |
+| `ROUTER_MODEL`                       | `haiku`       | Model that reads each message to decide what is wanted; a fast one keeps replies quick. Ollama default: `qwen3.5:9b`                                                 |
+| `DESIGN_MODEL`                       | `sonnet`      | Model that plans the site and draws the house. Ollama default: `qwen3.5:9b`                                                                                          |
+| `ESTIMATE_MODEL`                     | `sonnet`      | Model for cost estimates and timelines. Ollama default: `qwen3.5:9b`                                                                                                 |
+| `DESIGN_THINK`                       | `true`        | Let the model reason before drawing (better plans, slower)                                                                                                           |
 | `PLANNER_THINK`                      | `true`        | Let the planner reason before each decision (more accurate answers, a few seconds slower)                                                                            |
 | `DIGEST_CHANNEL`                     | —             | Slack channel id for the daily project digest; empty = no digest                                                                                                     |
 | `DIGEST_TIME`                        | `08:30`       | When to post the digest (HH:MM, this computer's time zone)                                                                                                           |
@@ -261,9 +264,11 @@ cp .env.example .env   # then fill in the Slack tokens
 npm run dev
 ```
 
-The bot prints `SuperAgent is running (reply mode: channel)`, checks that Ollama and the models are available, and resumes any jobs interrupted by the last restart. Tag it in a channel it has been invited to.
+The bot prints `SuperAgent is running (reply mode: channel)` and which models it uses, checks that Claude Code is logged in (or Ollama has the models), and resumes any jobs interrupted by the last restart. Tag it in a channel it has been invited to.
 
-**Tip:** Ollama answers one request at a time by default, so quick questions wait while a long design is being drawn. Starting Ollama with `OLLAMA_NUM_PARALLEL=2` lets quick replies run alongside a job (uses more memory). On macOS with the Ollama app: `launchctl setenv OLLAMA_NUM_PARALLEL 2`, then restart Ollama.
+**Claude Code backend.** Each model call runs `claude -p` with all of Claude Code's own tools, settings and MCP servers turned off, in an empty folder, so a Slack message can't make it touch the computer. Usage counts against the logged-in subscription's limits; when they're reached the bot says so until they reset. A subscription is meant for one person's use: for a bot a whole team relies on, an API key is the cleaner route.
+
+**Tip (Ollama only):** Ollama answers one request at a time by default, so quick questions wait while a long design is being drawn. Starting Ollama with `OLLAMA_NUM_PARALLEL=2` lets quick replies run alongside a job (uses more memory). On macOS with the Ollama app: `launchctl setenv OLLAMA_NUM_PARALLEL 2`, then restart Ollama.
 
 ### Development
 
@@ -284,9 +289,9 @@ node --import tsx src/test-agent.ts "<goal>" --approve         # also click Go (
 
 ## Limitations
 
-- **Model quality.** With a 9B model, drawings can have layout mistakes and cost estimates can be off — the feasibility report flags build costs outside a typical $/sq ft range. Pointing `DESIGN_MODEL` / `ESTIMATE_MODEL` at a stronger model improves results without code changes.
-- **A small planner.** The 9B model plans well for goals like the examples above, but vague goals ("make me money in real estate") get shallow plans. `PLANNER_MODEL` can point at a stronger model.
+- **Model quality.** Drawings can still have layout mistakes and cost estimates can be off (much more so on the local 9B model) — the feasibility report flags build costs outside a typical $/sq ft range.
+- **Subscription limits.** On the Claude Code backend, heavy use (several designs in a row) can reach the subscription's usage limit; the bot pauses until it resets.
 - **Austin-first.** Zoning lookups and the Edwards Aquifer check cover Austin, TX; elsewhere the bot uses typical residential defaults and says so.
 - **Planning-level data.** Values use asking prices of sold homes, soil comes from a regional survey (not borings), utility capacity isn't public, and FEMA maps can lag local floodplain maps.
-- **Runs locally.** The bot works while your machine, Ollama and `npm run dev` are running; jobs run one at a time.
+- **Runs on your machine.** The bot works while your machine and `npm run dev` are running (plus Ollama on that backend); jobs run one at a time.
 - **Dummy project data.** `data/projects/` currently holds sample projects; the format is ready to be fed with real data.

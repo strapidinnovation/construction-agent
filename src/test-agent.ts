@@ -109,13 +109,12 @@ async function runGoal(goal: string, key: string, digest = false): Promise<void>
       await approveMission(ctx, mission.id);
     } else break;
   }
-  const calls = mission.messages
-    .flatMap((m) => m.tool_calls ?? [])
-    .map((c) => `${c.function.name}(${JSON.stringify(c.function.arguments)})`);
   console.log(
-    `\n  RESULT: ${mission.state} after ${mission.modelCalls} model calls in ${Math.round((Date.now() - started) / 1000)}s`,
+    `\n  RESULT: ${mission.state} after ${mission.modelCalls} model turns in ${Math.round((Date.now() - started) / 1000)}s`,
   );
-  console.log(`  TOOL CALLS:\n${calls.map((c) => `    - ${c}`).join("\n") || "    (none)"}`);
+  console.log(
+    `  STEPS:\n${mission.steps.map((s) => `    - [${s.state}] ${s.text}`).join("\n") || "    (none)"}`,
+  );
 }
 
 const run = Date.now().toString(36);

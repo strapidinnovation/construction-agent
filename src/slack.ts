@@ -31,7 +31,14 @@
  */
 import { basename } from "node:path";
 import { App, LogLevel, type BlockButtonAction } from "@slack/bolt";
-import { DESIGN_MODEL, ESTIMATE_MODEL, MODEL, PLANNER_MODEL } from "./llm.ts";
+import {
+  BACKEND,
+  DESIGN_MODEL,
+  ESTIMATE_MODEL,
+  MODEL,
+  PLANNER_MODEL,
+  ROUTER_MODEL,
+} from "./llm.ts";
 import {
   answerMission,
   approveMission,
@@ -45,7 +52,7 @@ import {
   MISSION_GO_BUTTON,
 } from "./superagent/agent/missionUi.ts";
 import { startScheduler } from "./superagent/agent/schedule.ts";
-import { checkOllama } from "./superagent/health.ts";
+import { checkModels } from "./superagent/health.ts";
 import { conversationKey, parseKey, type ReplyMode } from "./superagent/sessions.ts";
 import {
   CANCEL_BUTTON,
@@ -325,9 +332,18 @@ console.log(
   `SuperAgent is running (reply mode: ${MODE}). Tag it in a channel it has been invited to. Ctrl+C to stop.`,
 );
 
-// Startup check: warn in the terminal (not in Slack) if Ollama or a model is
-// missing, so whoever started the bot can fix it before anyone asks.
-const problem = await checkOllama([MODEL, DESIGN_MODEL, ESTIMATE_MODEL, PLANNER_MODEL]);
+// Startup check: warn in the terminal (not in Slack) if the model backend isn't
+// ready, so whoever started the bot can fix it before anyone asks.
+console.log(
+  `AI models (${BACKEND}): agent ${PLANNER_MODEL}, router ${ROUTER_MODEL}, design ${DESIGN_MODEL}, estimate ${ESTIMATE_MODEL}, other ${MODEL}.`,
+);
+const problem = await checkModels([
+  MODEL,
+  ROUTER_MODEL,
+  DESIGN_MODEL,
+  ESTIMATE_MODEL,
+  PLANNER_MODEL,
+]);
 if (problem) console.warn(`Warning: ${problem}`);
 
 // Pick up jobs and agent missions that were interrupted by the last restart.

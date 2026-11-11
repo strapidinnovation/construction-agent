@@ -5,24 +5,25 @@
  * me if it's worth building"), the agent may need an hour and many steps to
  * reach it. A mission records everything about that work:
  *   - the goal and who asked,
- *   - the full conversation with the planner model (its tool calls and every
- *     tool result), which is what lets the agent pick up exactly where it
- *     stopped after a restart,
+ *   - the Agent SDK session id: the SDK keeps the conversation with the model
+ *     (every tool call and result), and resuming that session is what lets
+ *     the agent pick up exactly where it stopped, after a pause or a restart,
  *   - the checklist shown in Slack,
  *   - which slow jobs the user approved and how many have been used,
  *   - what it is waiting for (plan approval, an answer, a job).
  *
  * Each mission is one JSON file in data/missions/ (MISSIONS_DIR in tests).
- * The files double as a log: open one to see every decision the agent made
- * and why, which is the first place to look when it does something odd.
+ * The checklist in it shows what the agent did; the session transcript (see
+ * `sessionId`) has every decision in full, the first place to look when it
+ * does something odd.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Message } from "ollama";
 import type { Listing } from "../../agents/landSearch.ts";
 import { PROJECT_ROOT } from "../../paths.ts";
 import type { JobKind } from "../queue.ts";
+import type { LastAnswer } from "../sessions.ts";
 
 const DIR = process.env.MISSIONS_DIR || join(PROJECT_ROOT, "data", "missions");
 
@@ -54,10 +55,18 @@ export type Mission = {
   state: MissionState;
   /** Started by the scheduler (no one to approve plans or answer questions), so only quick tools. */
   unattended?: boolean;
-  /** Started as a follow-up to this earlier mission, whose goal and answer the model was given. */
+  /** Started as a follow-up to this earlier request, whose answer the model was given. */
   followsUp?: string;
-  /** The conversation with the planner model, without the system prompt (rebuilt every turn). */
-  messages: Message[];
+  /** The first message the model gets: the goal, after any earlier answer it follows up on. */
+  prompt: string;
+  /**
+   * The Agent SDK session holding the conversation with the model (every tool
+   * call and result). Resuming it continues exactly where the mission stopped.
+   * Its transcript is in ~/.claude/projects/, under the agent's work folder.
+   */
+  sessionId?: string;
+  /** The last tool call as "name {args}", to refuse an exact repeat. */
+  lastCall?: string;
   steps: Step[];
   /** Every listing the agent's searches found, so it can refer to them by street later. */
   listings: Listing[];
@@ -70,7 +79,7 @@ export type Mission = {
   pendingQuestion?: { question: string; options: string[] };
   /** The slow job running for this mission right now (to cancel it with the mission). */
   inflight?: { jobId: string; kind: JobKind };
-  /** How many times the planner model has been asked for its next step. */
+  /** How many model turns the mission has used (each turn decides the next tool calls). */
   modelCalls: number;
   /** The final answer, once done. */
   answer?: string;
@@ -116,17 +125,17 @@ export function saveMission(m: Mission): Promise<void> {
 const newId = () =>
   `m${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 6)}`;
 
-/** `previous`: the mission this one follows up on; its goal and answer go before the new goal. */
+/** `previous`: the answer this goal follows up on; it goes before the new goal. */
 export async function createMission(
   key: string,
   user: string,
   goal: string,
-  opts: { unattended?: boolean; previous?: Mission } = {},
+  opts: { unattended?: boolean; previous?: LastAnswer } = {},
 ): Promise<Mission> {
   const now = new Date().toISOString();
   const p = opts.previous;
   const content = p
-    ? `Earlier in this conversation you worked on: "${p.goal}"\nYour answer then was:\n${p.answer ?? ""}\n\nNew request: ${goal}`
+    ? `Earlier in this conversation the user asked: "${p.request}"\nYou answered:\n${p.summary}\n\nNew request: ${goal}`
     : goal;
   const m: Mission = {
     id: newId(),
@@ -135,8 +144,8 @@ export async function createMission(
     goal,
     state: "running",
     unattended: opts.unattended || undefined,
-    followsUp: p?.id,
-    messages: [{ role: "user", content }],
+    followsUp: p?.request,
+    prompt: content,
     steps: [],
     listings: [],
     approved: {},
@@ -174,19 +183,6 @@ const isActive = (m: Mission) => m.state === "running" || isWaiting(m);
 /** The unfinished mission in this conversation, if any (one at a time per conversation). */
 export function activeMission(key: string): Mission | undefined {
   return allMissions().find((m) => m.key === key && isActive(m));
-}
-
-/** How long after a mission ends a new message can still be a follow-up to it ("yes, do that"). */
-const FOLLOW_UP_MS = 60 * 60 * 1000;
-
-/** The mission that finished in this conversation within the last hour, if any. */
-export function recentMission(key: string): Mission | undefined {
-  return allMissions()
-    .filter(
-      (m) =>
-        m.key === key && m.state === "done" && Date.now() - Date.parse(m.updatedAt) < FOLLOW_UP_MS,
-    )
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 }
 
 /** This person's mission here that is waiting for them to approve a plan or answer a question. */

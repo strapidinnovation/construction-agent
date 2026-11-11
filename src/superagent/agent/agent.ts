@@ -1,14 +1,12 @@
 /**
  * The agent: works toward a goal on its own by calling tools.
  *
- * This is the classic agent loop:
- *   1. Send the planner model the goal, everything that happened so far in
- *      this mission, and the list of tools.
- *   2. The model answers with tool calls ("search_land Austin 300k") or with
- *      a final answer (no tool calls).
- *   3. Code checks and runs each tool call and adds the result to the
- *      conversation.
- *   4. Repeat until the model gives its final answer.
+ * The loop itself is run by the Claude Agent SDK (the engine behind Claude
+ * Code): it sends Claude the goal and SuperAgent's tools, runs the tool calls
+ * Claude makes, feeds the results back, and repeats until Claude answers.
+ * SuperAgent's tools (tools.ts) are served to it in-process as an MCP server;
+ * Claude Code's own tools (files, shell, web) are all turned off, and no local
+ * settings are loaded, so the agent can only do what those tools allow.
  *
  * The model decides WHAT to do (which tools, in what order, with what inputs,
  * when to change course). Code decides what is ALLOWED and keeps the facts
@@ -16,21 +14,23 @@
  *   - every tool call is checked against its schema (tools.ts),
  *   - slow jobs only run after the user approved a plan that includes them,
  *     and only as many as were approved,
- *   - at most MAX_MODEL_CALLS decisions per mission, then it must wrap up,
- *   - the same call twice in a row is refused (a common small-model loop),
+ *   - at most MAX_MODEL_CALLS turns per mission, then it must wrap up,
+ *   - the same call twice in a row is refused,
  *   - numbers come from tool results (comparison tables are built by code).
  *
  * A mission can take an hour (designs and estimates take minutes each), and
- * it can pause to wait for the user (approve a plan, answer a question). So
- * the loop doesn't hold on to anything in memory: after every step the
- * mission is saved (missions.ts), and the loop can stop and later continue
- * from the saved state: when the user answers, or after a restart.
+ * it can pause to wait for the user (approve a plan, answer a question). Those
+ * two tools end the model's turn; the SDK saves the session, and the user's
+ * answer resumes it later as the next message, even after a restart.
  */
-import type { Message } from "ollama";
-import { chatTools } from "../../llm.ts";
+import { createSdkMcpServer, query, tool, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PLANNER_MODEL } from "../../llm.ts";
 import { cancel } from "../queue.ts";
 import { threadSummary } from "../router.ts";
-import { getSession } from "../sessions.ts";
+import { getSession, recentAnswer, updateSession } from "../sessions.ts";
 import { errorReply } from "../slackUi.ts";
 import type { Ctx } from "../superagent.ts";
 import {
@@ -41,23 +41,36 @@ import {
   missionResumeReply,
   missionStatusText,
   notYourMissionReply,
+  questionReply,
 } from "./missionUi.ts";
 import {
   activeMission,
   allMissions,
   createMission,
   getMission,
-  recentMission,
   saveMission,
   type Mission,
 } from "./missions.ts";
-import { TOOLS_BY_NAME, toolsFor, type ToolOutcome } from "./tools.ts";
+import { toolsFor, type AgentTool, type ToolOutcome } from "./tools.ts";
 
-/** How many times the model may decide a next step in one mission before it must answer. */
+/** How many model turns one mission may use before it must answer. */
 const MAX_MODEL_CALLS = 25;
+
+/**
+ * Let the planner think before each decision. On by default: it makes the
+ * final answers read numbers correctly. PLANNER_THINK=false turns it off.
+ */
+const PLANNER_THINK = process.env.PLANNER_THINK !== "false";
+
+/** The MCP server name; the model sees each tool as mcp__superagent__<name>. */
+const SERVER = "superagent";
+
+/** An empty folder for the agent's sessions, so no project files, CLAUDE.md or settings are picked up. */
+const WORKDIR = join(tmpdir(), "superagent-agent");
 
 const SYSTEM = `You are SuperAgent, an autonomous assistant for a home builder, working in Slack.
 You reach the user's goal on your own by calling tools, one step at a time, until you can give a complete answer.
+Your tools are named mcp__superagent__<name>; below they are called by <name>.
 
 How to work:
 1. Work out what the goal needs, then gather facts with the QUICK tools: search_land, check_site, list_saved_plans,
@@ -84,20 +97,22 @@ Recipes (adapt them to the goal):
 9. When the goal is met, reply WITHOUT a tool call. That reply is your final answer:
    start with the answer or recommendation in one sentence, then up to 5 short bullet points with the reasons.
    Use only facts and numbers from tool results; never make up numbers. Under 150 words.
-   Slack formatting: *bold* and • bullets, no headings or tables (the user already saw the tables tools posted).`;
+   Slack formatting: *bold* and • bullets, no headings or tables (the user already saw the tables tools posted).
+10. A follow-up ("why should I worry about them?", "how long would each take?") is about your earlier answer,
+   given before the new request. Answer straight from it only when it already contains what is asked;
+   otherwise call tools for the things it names (e.g. project_details on each project it listed).`;
 
-/** The system prompt for one turn: the rules plus today's situation. */
+/**
+ * The system prompt, fixed for the whole mission: the SDK records it with the
+ * session, so anything that changes later (e.g. approved steps) goes into the
+ * messages instead.
+ */
 function systemPrompt(m: Mission): string {
-  const left = (["design", "estimate", "timeline", "feasibility"] as const)
-    .map((k) => [k, (m.approved[k] ?? 0) - (m.used[k] ?? 0)] as const)
-    .filter(([, n]) => n > 0)
-    .map(([k, n]) => `${n} ${k}`);
   return [
     SYSTEM,
     "",
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
     `What happened in this conversation before the goal:\n${threadSummary(getSession(m.key))}`,
-    `Approved slow steps still available: ${left.length ? left.join(", ") : "none"}.`,
     ...(m.unattended
       ? [
           "This is a scheduled report: nobody is there to approve plans or answer questions, so you only have quick tools. Answer from what they find.",
@@ -106,36 +121,119 @@ function systemPrompt(m: Mission): string {
   ].join("\n");
 }
 
-/** Tool calls from the model's last message that don't have a result yet. */
-function pendingCalls(m: Mission): NonNullable<Message["tool_calls"]> {
-  let i = m.messages.length - 1;
-  while (i >= 0 && m.messages[i]!.role === "tool") i--;
-  const last = m.messages[i];
-  if (!last || last.role !== "assistant" || !last.tool_calls?.length) return [];
-  return last.tool_calls.slice(m.messages.length - 1 - i);
+/** "2 design, 2 feasibility": the approved slow steps not used yet. */
+function stepsLeft(m: Mission): string {
+  const left = (["design", "estimate", "timeline", "feasibility"] as const)
+    .map((k) => [k, (m.approved[k] ?? 0) - (m.used[k] ?? 0)] as const)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${n} ${k}`);
+  return left.length ? left.join(", ") : "none";
 }
 
-/** The tool call made just before the next pending one, as "name {args}", to catch exact repeats. */
-function previousCall(m: Mission): string | undefined {
-  const calls = m.messages.flatMap((msg) => msg.tool_calls ?? []);
-  const answered = m.messages.filter((msg) => msg.role === "tool").length;
-  const prev = calls[answered - 1];
-  return prev && `${prev.function.name} ${JSON.stringify(prev.function.arguments)}`;
+const statusOf = (ctx: Ctx, m: Mission) => (now?: string) =>
+  ctx.out.status(missionStatusText(m, now), {
+    cancelId: m.id,
+    cancelAction: MISSION_CANCEL_BUTTON,
+  });
+
+// ---------------------------------------------------------------------------
+// Tools: SuperAgent's tools, wrapped for the Agent SDK.
+// ---------------------------------------------------------------------------
+
+type ToolReply = {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+};
+
+const toolReply = (outcome: ToolOutcome): ToolReply => ({
+  content: [{ type: "text", text: JSON.stringify(outcome.result ?? null) }],
+  ...(outcome.failed ? { isError: true } : {}),
+  // propose_plan / ask_user: end the model's turn here. The session is saved,
+  // and the user's answer continues it as the next message.
+  ...(outcome.pause ? { _meta: { "claude/endTurn": true } } : {}),
+});
+
+/** One tool call at a time per mission (the model may ask for several at once). */
+const toolQueue = new Map<string, Promise<unknown>>();
+
+/** Run one tool call: checklist line, repeat guard, the tool itself, and its result for the model. */
+async function callTool(ctx: Ctx, m: Mission, t: AgentTool, args: unknown): Promise<ToolReply> {
+  const call = `${t.name} ${JSON.stringify(args)}`;
+  if (call === m.lastCall)
+    return toolReply({
+      result: {
+        error:
+          "You just made this exact call; its result is above. Use it, or do something different.",
+      },
+      failed: true,
+    });
+  m.lastCall = call;
+
+  const status = statusOf(ctx, m);
+  const step = { text: t.label(args), state: "running" as "running" | "done" | "failed" };
+  m.steps.push(step);
+  await saveMission(m);
+  await status();
+  console.log(`  [${m.id}] ${call}`);
+
+  let outcome: ToolOutcome;
+  try {
+    outcome = await t.run(args, { ctx, mission: m });
+  } catch (err) {
+    console.error(err);
+    outcome = { result: { error: err instanceof Error ? err.message : String(err) }, failed: true };
+  }
+  step.text = outcome.done ?? step.text;
+  // A paused step stays "running" until the user answers (see resume).
+  if (!outcome.pause) step.state = outcome.failed ? "failed" : "done";
+  await saveMission(m);
+  if (m.state === "running") await status("Deciding what to do next…");
+  else await status();
+  return toolReply(outcome);
 }
 
-const failResult = (error: string): ToolOutcome => ({ result: { error }, failed: true });
+function toolServer(ctx: Ctx, m: Mission) {
+  return createSdkMcpServer({
+    name: SERVER,
+    tools: toolsFor(m).map((t) =>
+      tool(t.name, t.description, t.params.shape, (args) => {
+        const run = (toolQueue.get(m.id) ?? Promise.resolve()).then(() =>
+          callTool(ctx, m, t, args),
+        );
+        toolQueue.set(
+          m.id,
+          run.catch(() => undefined),
+        );
+        return run;
+      }),
+    ),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Running a mission: one SDK query per stretch of work.
+// ---------------------------------------------------------------------------
 
 /** Missions whose loop is running in this process, so a mission never runs twice at once. */
 const driving = new Map<string, Promise<void>>();
+/** Lets cancel stop the model mid-turn. */
+const aborts = new Map<string, AbortController>();
 
-/** Run (or continue) a mission's loop in the background. */
-function drive(ctx: Ctx, id: string): Promise<void> {
+/** Run (or continue) a mission in the background, starting with `prompt`. */
+function drive(ctx: Ctx, id: string, prompt: string): Promise<void> {
   const running = driving.get(id);
   // Still finishing a previous stretch (e.g. "Go" clicked the moment it paused): continue after it.
-  if (running) return running.then(() => drive(ctx, id));
-  const run = loop(ctx, id)
-    .catch((err) => fail(ctx, id, err))
-    .finally(() => driving.delete(id));
+  if (running) return running.then(() => drive(ctx, id, prompt));
+  const run = work(ctx, id, prompt)
+    .catch((err) => {
+      if (getMission(id)?.state === "cancelled") return;
+      return fail(ctx, id, err);
+    })
+    .finally(() => {
+      driving.delete(id);
+      aborts.delete(id);
+    });
   driving.set(id, run);
   return run;
 }
@@ -145,122 +243,108 @@ export function settled(id: string): Promise<void> {
   return driving.get(id) ?? Promise.resolve();
 }
 
-async function loop(ctx: Ctx, id: string): Promise<void> {
-  const m = getMission(id);
-  if (!m) return;
-  const status = (now?: string) =>
-    ctx.out.status(missionStatusText(m, now), {
-      cancelId: m.id,
-      cancelAction: MISSION_CANCEL_BUTTON,
-    });
+/**
+ * Send `prompt` to the mission's session and let the SDK run tools until the
+ * model's turn ends. Returns the model's text reply and how the turn ended.
+ */
+async function turn(
+  ctx: Ctx,
+  m: Mission,
+  prompt: string,
+  opts: { noTools?: boolean } = {},
+): Promise<{ text: string; outOfTurns: boolean }> {
+  mkdirSync(WORKDIR, { recursive: true });
+  const abort = new AbortController();
+  aborts.set(m.id, abort);
+  const tools = opts.noTools ? [] : toolsFor(m);
+  const options: Options = {
+    model: PLANNER_MODEL,
+    cwd: WORKDIR,
+    resume: m.sessionId,
+    abortController: abort,
+    systemPrompt: systemPrompt(m),
+    tools: [],
+    settingSources: [],
+    strictMcpConfig: true,
+    mcpServers: tools.length ? { [SERVER]: toolServer(ctx, m) } : {},
+    allowedTools: tools.map((t) => `mcp__${SERVER}__${t.name}`),
+    permissionMode: "dontAsk",
+    maxTurns: opts.noTools ? 1 : Math.max(1, MAX_MODEL_CALLS - m.modelCalls),
+    thinking: PLANNER_THINK ? { type: "adaptive" } : { type: "disabled" },
+  };
 
-  for (;;) {
-    if (m.state === "cancelled") {
+  for await (const msg of query({ prompt, options })) {
+    if (msg.type === "system" && msg.subtype === "init" && msg.session_id !== m.sessionId) {
+      m.sessionId = msg.session_id;
+      await saveMission(m);
+    }
+    if (msg.type !== "result") continue;
+    m.modelCalls += msg.num_turns;
+    await saveMission(m);
+    if (msg.subtype === "success") return { text: msg.result.trim(), outOfTurns: false };
+    if (msg.subtype === "error_max_turns") return { text: "", outOfTurns: true };
+    throw new Error(`The agent stopped: ${msg.errors?.join("; ") || msg.subtype}`);
+  }
+  throw new Error("The agent stopped without an answer.");
+}
+
+async function work(ctx: Ctx, id: string, firstPrompt: string): Promise<void> {
+  const m = getMission(id);
+  if (!m || m.state !== "running") return;
+  const status = statusOf(ctx, m);
+  await status("Deciding what to do next…");
+
+  let prompt = firstPrompt;
+  for (let nudges = 0; ; nudges++) {
+    const { text, outOfTurns } = await turn(ctx, m, prompt);
+    if ((m.state as string) === "cancelled") {
       await ctx.out.status(missionStatusText(m, ":octagonal_sign: Cancelled."));
       return;
     }
+    // propose_plan / ask_user ended the turn: wait for the user.
     if (m.state !== "running") return;
 
-    // 1. Run the model's tool calls that don't have a result yet, one at a time.
-    const [call] = pendingCalls(m);
-    if (call) {
-      const { name, arguments: args } = call.function;
-      const tool = TOOLS_BY_NAME.get(name);
-      const allowed = toolsFor(m).map((t) => t.name);
-      let outcome: ToolOutcome;
-      if (!tool || !allowed.includes(name)) {
-        outcome = failResult(`There is no tool "${name}". Tools: ${allowed.join(", ")}.`);
-      } else if (previousCall(m) === `${name} ${JSON.stringify(args)}`) {
-        outcome = failResult(
-          "You just made this exact call; its result is above. Use it, or do something different.",
-        );
-      } else {
-        const step = { text: tool.label(args), state: "running" as const };
-        m.steps.push(step);
-        await saveMission(m);
-        await status();
-        console.log(`  [${m.id}] ${name} ${JSON.stringify(args)}`);
-        try {
-          outcome = await tool.run(args, { ctx, mission: m });
-        } catch (err) {
-          console.error(err);
-          outcome = failResult(err instanceof Error ? err.message : String(err));
-        }
-        const last = m.steps.at(-1)!;
-        last.text = outcome.done ?? last.text;
-        if (outcome.pause) {
-          // The tool posted its question and set the waiting state; the user's answer continues the loop.
-          await saveMission(m);
-          await status();
-          return;
-        }
-        last.state = outcome.failed ? "failed" : "done";
-      }
-      // Cancelled while the tool was running: stop without recording its result.
-      if ((m.state as string) === "cancelled") continue;
-      m.messages.push({ role: "tool", tool_name: name, content: JSON.stringify(outcome.result) });
-      await saveMission(m);
-      continue;
+    if (outOfTurns) {
+      const wrapUp = await turn(
+        ctx,
+        m,
+        "You have used all your steps. Give your final answer now from what you found, and say what is still undone.",
+        { noTools: true },
+      );
+      return finish(
+        ctx,
+        m,
+        wrapUp.text || "I ran out of steps before finishing. The results so far are above.",
+      );
     }
 
-    // 2. Ask the model for its next step.
-    if (m.modelCalls >= MAX_MODEL_CALLS) return finish(ctx, m, await wrapUp(m));
-    await status("Deciding what to do next…");
-    const reply = await chatTools(
-      [{ role: "system", content: systemPrompt(m) }, ...m.messages],
-      toolsFor(m).map((t) => t.schema),
-    );
-    m.modelCalls++;
-    if ((m.state as string) === "cancelled") continue;
-
-    const calls = reply.tool_calls ?? [];
-    // Small models often ask "which city?" in a plain reply instead of calling
-    // ask_user, which would end the mission and lose the goal. A new goal always
-    // needs tools, so a reply before any tool was used is a clarifying question:
-    // it is turned into ask_user and the mission waits for the answer. A
-    // follow-up can be answered from the earlier result, so there only a reply
-    // that actually asks something is treated that way.
-    const content = reply.content?.trim() ?? "";
-    const asking = !m.followsUp || content.includes("?");
-    if (!calls.length && !m.steps.length && !m.unattended && content && asking)
-      calls.push({ function: { name: "ask_user", arguments: { question: content } } });
-    // Thinking text isn't kept: it's long, and the model doesn't need its old thoughts.
-    m.messages.push({
-      role: "assistant",
-      content: reply.content ?? "",
-      ...(calls.length ? { tool_calls: calls } : {}),
-    });
-    await saveMission(m);
-    if (calls.length) continue;
-
-    if (reply.content?.trim()) return finish(ctx, m, reply.content);
-    // An empty reply: nudge it once more (the step limit stops endless nudging).
-    m.messages.push({ role: "user", content: "Please give your final answer now." });
-    await saveMission(m);
+    // A goal always needs tools, so a plain reply before any tool was used is
+    // really a clarifying question: ask it and wait, instead of ending the
+    // mission. A follow-up can be answered from the earlier result, so there
+    // only a reply that actually asks something is treated that way.
+    const asking = !m.followsUp || text.includes("?");
+    if (text && !m.steps.length && !m.unattended && asking) {
+      m.state = "waiting-answer";
+      m.pendingQuestion = { question: text, options: [] };
+      await saveMission(m);
+      await ctx.out.reply(questionReply(m, text, []));
+      return;
+    }
+    if (text) return finish(ctx, m, text);
+    // An empty reply: nudge once more.
+    if (nudges >= 1) return finish(ctx, m, "");
+    prompt = "Please give your final answer now.";
   }
-}
-
-/** Out of steps: ask for the best answer from what it has, without tools. */
-async function wrapUp(m: Mission): Promise<string> {
-  const reply = await chatTools(
-    [
-      { role: "system", content: systemPrompt(m) },
-      ...m.messages,
-      {
-        role: "user",
-        content:
-          "You have used all your steps. Give your final answer now from what you found, and say what is still undone.",
-      },
-    ],
-    [],
-  );
-  return reply.content || "I ran out of steps before finishing. The results so far are above.";
 }
 
 async function finish(ctx: Ctx, m: Mission, answer: string): Promise<void> {
   m.state = "done";
   m.answer = answer;
   await saveMission(m);
+  if (!m.unattended)
+    await updateSession(m.key, {
+      lastAnswer: { request: m.goal, summary: answer, at: new Date().toISOString() },
+    });
   await ctx.out.status(missionStatusText(m, ":white_check_mark: Done."));
   await ctx.out.reply(missionDoneReply(m, answer));
 }
@@ -295,34 +379,28 @@ export async function startMission(
     await ctx.out.reply(missionBusyReply(busy));
     return undefined;
   }
-  // A goal soon after another one may build on it ("yes, run those", "now do
-  // the same for Cadillac Dr"), so the model gets the earlier goal and answer.
-  const previous = opts.unattended ? undefined : recentMission(ctx.key);
+  // A goal soon after another answer may build on it ("yes, run those", "why
+  // should I worry about them?"), so the model gets the earlier request and answer.
+  const previous = opts.unattended ? undefined : recentAnswer(getSession(ctx.key));
   const m = await createMission(ctx.key, ctx.user, goal, {
     unattended: opts.unattended,
     previous,
   });
   console.log(`Mission ${m.id} started in ${ctx.key}: "${goal}"`);
-  void drive(ctx, m.id);
+  void drive(ctx, m.id, m.prompt);
   return m.id;
 }
 
-/** Answer the paused tool call (propose_plan or ask_user) and continue the loop. */
-async function resume(ctx: Ctx, m: Mission, result: unknown, stepText: string): Promise<void> {
-  const [call] = pendingCalls(m);
-  if (call)
-    m.messages.push({
-      role: "tool",
-      tool_name: call.function.name,
-      content: JSON.stringify(result),
-    });
+/** The user answered a pause (plan or question): mark it in the checklist and continue with their answer. */
+async function resume(ctx: Ctx, m: Mission, prompt: string, stepText: string): Promise<void> {
   const last = m.steps.at(-1);
   if (last) Object.assign(last, { text: stepText, state: "done" });
   m.state = "running";
   m.pendingPlan = undefined;
   m.pendingQuestion = undefined;
+  m.lastCall = undefined;
   await saveMission(m);
-  void drive(ctx, m.id);
+  void drive(ctx, m.id, prompt);
 }
 
 /** "Go" on a proposed plan: approve its slow steps and carry on. Only the person who asked may approve. */
@@ -337,7 +415,7 @@ export async function approveMission(ctx: Ctx, id: string): Promise<void> {
   await resume(
     ctx,
     m,
-    { approved: true, message: "The user approved the plan. Run its steps now." },
+    `The user approved the plan. Run its steps now. Approved slow steps available: ${stepsLeft(m)}.`,
     `Plan approved (~${minutes} min)`,
   );
 }
@@ -353,16 +431,11 @@ export async function answerMission(ctx: Ctx, id: string, text: string): Promise
     return resume(
       ctx,
       m,
-      {
-        approved: false,
-        userSays: text,
-        message:
-          "The user did not approve yet. Adjust the plan to what they said and call propose_plan again, or answer them if no slow work is needed any more.",
-      },
+      `The user did not approve the plan yet. They said: "${text}"\nAdjust the plan to what they said and call propose_plan again, or answer them if no slow work is needed any more.`,
       `You asked for changes: "${text}"`,
     );
   if (m.state === "waiting-answer")
-    return resume(ctx, m, { answer: text }, `You answered: "${text}"`);
+    return resume(ctx, m, `The user answered: "${text}"`, `You answered: "${text}"`);
 }
 
 /** Stop a mission (and the job it is waiting for, if any). Anyone in the conversation may cancel. */
@@ -375,31 +448,39 @@ export async function cancelMission(ctx: Ctx, id: string): Promise<void> {
   m.state = "cancelled";
   await saveMission(m);
   if (m.inflight) cancel(m.key, m.inflight.jobId);
+  aborts.get(m.id)?.abort();
   console.log(`Mission ${m.id} cancelled`);
   await ctx.out.reply(missionCancelledReply(m));
+  if (!driving.has(m.id)) await ctx.out.status(missionStatusText(m, ":octagonal_sign: Cancelled."));
 }
 
 /**
- * Called once when the bot starts: missions that were running when it
- * stopped carry on from their last saved step. A slow job that was running is
- * started again (its tool call never got a result). Missions waiting for the
- * user stay paused; their buttons and replies still work.
+ * Called once when the bot starts: missions that were running when it stopped
+ * carry on from their saved session. A slow job that was interrupted doesn't
+ * count against the approval, so the agent can run it again. Missions waiting
+ * for the user stay paused; their buttons and replies still work.
  */
 export async function resumeMissions(makeCtx: (key: string, user: string) => Ctx): Promise<number> {
   const running = allMissions().filter((m) => m.state === "running");
   for (const m of running) {
+    let interrupted = "";
     if (m.inflight) {
-      // That job will be queued again, so it shouldn't count twice against the approval.
       m.used[m.inflight.kind] = Math.max(0, (m.used[m.inflight.kind] ?? 1) - 1);
+      interrupted = ` The ${m.inflight.kind} job that was running did not finish; call its tool again to redo it.`;
       m.inflight = undefined;
     }
     const lastStep = m.steps.at(-1);
     if (lastStep?.state === "running") m.steps.pop();
+    m.lastCall = undefined;
     await saveMission(m);
     const ctx = makeCtx(m.key, m.user);
+    // Without a session (stopped before the model first answered), start over from the goal.
+    const prompt = m.sessionId
+      ? `SuperAgent was restarted while you were working.${interrupted} Continue toward the goal.`
+      : (m.prompt ?? m.goal);
     try {
       await ctx.out.reply(missionResumeReply(m));
-      void drive(ctx, m.id);
+      void drive(ctx, m.id, prompt);
     } catch (err) {
       console.error(`Could not resume mission ${m.id}:`, err);
     }
