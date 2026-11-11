@@ -1,0 +1,200 @@
+{
+  "id": "river-bend-townhomes",
+  "name": "River Bend Townhomes",
+  "aliases": ["river bend", "12610 river bnd", "river bnd townhomes"],
+  "client": "Hartley Family Trust",
+  "site": { "address": "12610 River Bnd, Austin, TX 78732", "zoning": "SF-2", "lotSqft": 12390 },
+  "scope": {
+    "homes": 3,
+    "description": "Three 2-story townhomes, 3 bed / 2.5 bath, 2,400 sq ft each, 2-car garages",
+    "heatedSqft": 7200
+  },
+  "team": {
+    "builder": "Lone Star Homebuilders",
+    "projectManager": "Maria Gonzales",
+    "superintendent": "Dave Kim"
+  },
+  "dates": { "start": "2026-05-04", "plannedFinish": "2027-02-26", "forecastFinish": "2027-04-09" },
+  "budget": { "contractUsd": 1006703, "spentUsd": 412300, "approvedChangeOrdersUsd": 18500 },
+  "onHold": null,
+  "stages": [
+    {
+      "stage": "pre-construction",
+      "plannedStart": "2026-05-04",
+      "plannedEnd": "2026-06-12",
+      "actualStart": "2026-05-04",
+      "actualEnd": "2026-06-12",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "permitting",
+      "plannedStart": "2026-05-18",
+      "plannedEnd": "2026-07-03",
+      "actualStart": "2026-05-18",
+      "actualEnd": "2026-07-24",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "site-prep",
+      "plannedStart": "2026-07-06",
+      "plannedEnd": "2026-07-17",
+      "actualStart": "2026-07-27",
+      "actualEnd": "2026-08-14",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "foundation",
+      "plannedStart": "2026-07-20",
+      "plannedEnd": "2026-08-21",
+      "actualStart": "2026-08-17",
+      "actualEnd": "2026-09-30",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "framing",
+      "plannedStart": "2026-08-24",
+      "plannedEnd": "2026-10-16",
+      "actualStart": "2026-10-01",
+      "forecastEnd": "2026-11-27",
+      "status": "in-progress",
+      "percent": 55
+    },
+    {
+      "stage": "dry-in",
+      "plannedStart": "2026-10-19",
+      "plannedEnd": "2026-11-06",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "rough-ins",
+      "plannedStart": "2026-11-09",
+      "plannedEnd": "2026-12-11",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "insulation-drywall",
+      "plannedStart": "2026-12-14",
+      "plannedEnd": "2027-01-08",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "exterior",
+      "plannedStart": "2026-12-14",
+      "plannedEnd": "2027-01-29",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "interior-finishes",
+      "plannedStart": "2027-01-11",
+      "plannedEnd": "2027-02-12",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "final-installs",
+      "plannedStart": "2027-02-01",
+      "plannedEnd": "2027-02-19",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "closeout",
+      "plannedStart": "2027-02-15",
+      "plannedEnd": "2027-02-26",
+      "status": "not-started",
+      "percent": 0
+    }
+  ],
+  "issues": [
+    {
+      "id": "RB-01",
+      "title": "Permit sent back for a drainage plan revision",
+      "category": "permit",
+      "status": "resolved",
+      "raisedOn": "2026-06-22",
+      "resolvedOn": "2026-07-24",
+      "impactDays": 15,
+      "stage": "permitting",
+      "owner": "Civil engineer (Bluebonnet Engineering)",
+      "description": "The City reviewer required an updated stormwater detention calculation because three units share one lot.",
+      "nextStep": null
+    },
+    {
+      "id": "RB-02",
+      "title": "Heavy rain delayed site clearing",
+      "category": "weather",
+      "status": "resolved",
+      "raisedOn": "2026-07-28",
+      "resolvedOn": "2026-08-07",
+      "impactDays": 7,
+      "stage": "site-prep",
+      "owner": "Dave Kim",
+      "description": "Six rain days in two weeks left the site too wet for equipment.",
+      "nextStep": null
+    },
+    {
+      "id": "RB-03",
+      "title": "Failed foundation inspection: rebar spacing on H2",
+      "category": "inspection",
+      "status": "resolved",
+      "raisedOn": "2026-09-14",
+      "resolvedOn": "2026-09-22",
+      "impactDays": 6,
+      "stage": "foundation",
+      "owner": "Foundation subcontractor (Capitol Concrete)",
+      "description": "The inspector found grade-beam rebar spaced wider than the drawings on unit H2. It was corrected and passed re-inspection.",
+      "nextStep": null
+    },
+    {
+      "id": "RB-04",
+      "title": "Roof trusses backordered for H2 and H3",
+      "category": "material",
+      "status": "open",
+      "raisedOn": "2026-10-20",
+      "resolvedOn": null,
+      "expectedResolution": "2026-11-23",
+      "impactDays": 14,
+      "stage": "framing",
+      "owner": "Maria Gonzales",
+      "description": "The truss supplier's plant is behind; trusses for H2 and H3 are now due Nov 23 instead of Nov 9. Roofing and dry-in can't start until they are set.",
+      "nextStep": "Get a firm ship date by Nov 13 and price a second supplier as a backup."
+    }
+  ],
+  "inspections": [
+    { "name": "Under-slab plumbing", "date": "2026-08-31", "result": "passed" },
+    { "name": "Foundation (H1, H3)", "date": "2026-09-14", "result": "passed" },
+    {
+      "name": "Foundation (H2)",
+      "date": "2026-09-14",
+      "result": "failed",
+      "notes": "Rebar spacing over spec"
+    },
+    { "name": "Foundation re-inspection (H2)", "date": "2026-09-22", "result": "passed" },
+    { "name": "Framing (H1)", "date": "2026-11-18", "result": "scheduled" }
+  ],
+  "updates": [
+    {
+      "date": "2026-11-09",
+      "author": "Dave Kim",
+      "note": "H1 is framed and sheathed; framing inspection booked for Nov 18. H2 and H3 walls are up, waiting on roof trusses."
+    },
+    {
+      "date": "2026-11-02",
+      "author": "Maria Gonzales",
+      "note": "Truss supplier pushed delivery by two weeks. Requested a quote from a backup supplier."
+    },
+    {
+      "date": "2026-10-19",
+      "author": "Dave Kim",
+      "note": "Wall framing on all three units going well; crew of six on site."
+    }
+  ]
+}

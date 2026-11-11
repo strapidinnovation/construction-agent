@@ -1,0 +1,215 @@
+{
+  "id": "corral-lane-residence",
+  "name": "Corral Lane Residence",
+  "aliases": ["corral lane", "corral ln", "8435 corral ln"],
+  "client": "Sarah and Tom Becker",
+  "site": { "address": "8435 Corral Ln, Austin, TX 78745", "zoning": "SF-3", "lotSqft": 7400 },
+  "scope": {
+    "homes": 1,
+    "description": "One 2-story house, 4 bed / 3 bath, 2,100 sq ft, 2-car garage",
+    "heatedSqft": 2100
+  },
+  "team": {
+    "builder": "Hill Country Custom Homes",
+    "projectManager": "Alan Brooks",
+    "superintendent": "Luis Ortega"
+  },
+  "dates": { "start": "2026-03-02", "plannedFinish": "2026-12-18", "forecastFinish": "2027-01-08" },
+  "budget": { "contractUsd": 412000, "spentUsd": 338500, "approvedChangeOrdersUsd": 9200 },
+  "onHold": null,
+  "stages": [
+    {
+      "stage": "pre-construction",
+      "plannedStart": "2026-03-02",
+      "plannedEnd": "2026-03-27",
+      "actualStart": "2026-03-02",
+      "actualEnd": "2026-03-27",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "permitting",
+      "plannedStart": "2026-03-16",
+      "plannedEnd": "2026-04-24",
+      "actualStart": "2026-03-16",
+      "actualEnd": "2026-04-24",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "site-prep",
+      "plannedStart": "2026-04-27",
+      "plannedEnd": "2026-05-08",
+      "actualStart": "2026-04-27",
+      "actualEnd": "2026-05-08",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "foundation",
+      "plannedStart": "2026-05-11",
+      "plannedEnd": "2026-06-05",
+      "actualStart": "2026-05-11",
+      "actualEnd": "2026-06-12",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "framing",
+      "plannedStart": "2026-06-08",
+      "plannedEnd": "2026-07-17",
+      "actualStart": "2026-06-15",
+      "actualEnd": "2026-07-24",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "dry-in",
+      "plannedStart": "2026-07-20",
+      "plannedEnd": "2026-07-31",
+      "actualStart": "2026-07-27",
+      "actualEnd": "2026-08-07",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "rough-ins",
+      "plannedStart": "2026-08-03",
+      "plannedEnd": "2026-08-28",
+      "actualStart": "2026-08-10",
+      "actualEnd": "2026-09-04",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "insulation-drywall",
+      "plannedStart": "2026-08-31",
+      "plannedEnd": "2026-09-25",
+      "actualStart": "2026-09-08",
+      "actualEnd": "2026-10-02",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "exterior",
+      "plannedStart": "2026-08-31",
+      "plannedEnd": "2026-10-16",
+      "actualStart": "2026-09-08",
+      "actualEnd": "2026-10-23",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "interior-finishes",
+      "plannedStart": "2026-10-12",
+      "plannedEnd": "2026-11-20",
+      "actualStart": "2026-10-19",
+      "forecastEnd": "2026-12-11",
+      "status": "in-progress",
+      "percent": 50
+    },
+    {
+      "stage": "final-installs",
+      "plannedStart": "2026-11-23",
+      "plannedEnd": "2026-12-11",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "closeout",
+      "plannedStart": "2026-12-07",
+      "plannedEnd": "2026-12-18",
+      "status": "not-started",
+      "percent": 0
+    }
+  ],
+  "issues": [
+    {
+      "id": "CL-01",
+      "title": "Concrete supplier shortage pushed the slab pour",
+      "category": "material",
+      "status": "resolved",
+      "raisedOn": "2026-06-01",
+      "resolvedOn": "2026-06-10",
+      "impactDays": 7,
+      "stage": "foundation",
+      "owner": "Luis Ortega",
+      "description": "The ready-mix plant rationed deliveries during a regional cement shortage; the pour moved from June 3 to June 10. Every later stage started about a week late.",
+      "nextStep": null
+    },
+    {
+      "id": "CL-02",
+      "title": "Kitchen and bath cabinets arriving late",
+      "category": "material",
+      "status": "open",
+      "raisedOn": "2026-10-28",
+      "resolvedOn": null,
+      "expectedResolution": "2026-11-24",
+      "impactDays": 14,
+      "stage": "interior-finishes",
+      "owner": "Alan Brooks",
+      "description": "The cabinet shop is two weeks behind on custom boxes; delivery moved from Nov 10 to Nov 24.",
+      "nextStep": "Install flooring and interior paint while waiting so the crew stays busy."
+    },
+    {
+      "id": "CL-03",
+      "title": "Countertops can't be measured until cabinets are installed",
+      "category": "scheduling",
+      "status": "open",
+      "raisedOn": "2026-10-28",
+      "resolvedOn": null,
+      "expectedResolution": "2026-12-04",
+      "impactDays": 0,
+      "stage": "interior-finishes",
+      "owner": "Alan Brooks",
+      "description": "Quartz countertops need a template taken on installed cabinets, then about 8 working days to fabricate. Already counted in the cabinet delay, but any further cabinet slip moves the finish date day for day.",
+      "nextStep": "Book the countertop template for Nov 25, the day after cabinet delivery."
+    },
+    {
+      "id": "CL-04",
+      "title": "HVAC rough-in re-check",
+      "category": "inspection",
+      "status": "resolved",
+      "raisedOn": "2026-09-02",
+      "resolvedOn": "2026-09-03",
+      "impactDays": 0,
+      "stage": "rough-ins",
+      "owner": "HVAC subcontractor",
+      "description": "Inspector asked for one duct strap to be added; fixed and signed off the next day.",
+      "nextStep": null
+    }
+  ],
+  "inspections": [
+    { "name": "Foundation", "date": "2026-06-09", "result": "passed" },
+    { "name": "Framing", "date": "2026-07-23", "result": "passed" },
+    {
+      "name": "Rough-in (plumbing, electrical, HVAC)",
+      "date": "2026-09-02",
+      "result": "passed",
+      "notes": "HVAC strap added next day"
+    },
+    { "name": "Insulation / energy", "date": "2026-09-14", "result": "passed" },
+    {
+      "name": "Final building, plumbing, electrical, mechanical",
+      "date": "2027-01-05",
+      "result": "scheduled"
+    }
+  ],
+  "updates": [
+    {
+      "date": "2026-11-10",
+      "author": "Luis Ortega",
+      "note": "Flooring is down upstairs; painters start downstairs Thursday. Cabinets still due Nov 24."
+    },
+    {
+      "date": "2026-10-28",
+      "author": "Alan Brooks",
+      "note": "Cabinet shop delayed delivery two weeks. Re-sequenced flooring and paint ahead of cabinets."
+    },
+    {
+      "date": "2026-10-23",
+      "author": "Luis Ortega",
+      "note": "Exterior complete: siding, paint, gutters and driveway done."
+    }
+  ]
+}

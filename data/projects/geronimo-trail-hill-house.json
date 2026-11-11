@@ -1,0 +1,166 @@
+{
+  "id": "geronimo-trail-hill-house",
+  "name": "Geronimo Trail Hill House",
+  "aliases": ["geronimo", "geronimo trail", "geronimo trl", "hill house", "1370 geronimo trl"],
+  "client": "Dr. Priya Raman",
+  "site": { "address": "1370 Geronimo Trl, Austin, TX 78734", "zoning": "SF-2", "lotSqft": 18730 },
+  "scope": {
+    "homes": 1,
+    "description": "One 2-story hillside house, 4 bed / 3.5 bath, 2,800 sq ft, on drilled piers with a walk-out lower level",
+    "heatedSqft": 2800
+  },
+  "team": {
+    "builder": "Hill Country Custom Homes",
+    "projectManager": "Alan Brooks",
+    "superintendent": "Megan Shaw"
+  },
+  "dates": { "start": "2026-08-17", "plannedFinish": "2027-05-14", "forecastFinish": "2027-05-28" },
+  "budget": { "contractUsd": 689000, "spentUsd": 121400, "approvedChangeOrdersUsd": 0 },
+  "onHold": null,
+  "stages": [
+    {
+      "stage": "pre-construction",
+      "plannedStart": "2026-08-17",
+      "plannedEnd": "2026-09-11",
+      "actualStart": "2026-08-17",
+      "actualEnd": "2026-09-11",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "permitting",
+      "plannedStart": "2026-08-31",
+      "plannedEnd": "2026-10-09",
+      "actualStart": "2026-08-31",
+      "actualEnd": "2026-10-09",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "site-prep",
+      "plannedStart": "2026-10-12",
+      "plannedEnd": "2026-10-16",
+      "actualStart": "2026-10-12",
+      "actualEnd": "2026-10-16",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "foundation",
+      "plannedStart": "2026-10-19",
+      "plannedEnd": "2026-11-20",
+      "actualStart": "2026-10-19",
+      "forecastEnd": "2026-12-04",
+      "status": "in-progress",
+      "percent": 40
+    },
+    {
+      "stage": "framing",
+      "plannedStart": "2026-11-23",
+      "plannedEnd": "2027-01-15",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "dry-in",
+      "plannedStart": "2027-01-18",
+      "plannedEnd": "2027-02-05",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "rough-ins",
+      "plannedStart": "2027-02-08",
+      "plannedEnd": "2027-03-05",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "insulation-drywall",
+      "plannedStart": "2027-03-08",
+      "plannedEnd": "2027-03-26",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "exterior",
+      "plannedStart": "2027-03-08",
+      "plannedEnd": "2027-04-16",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "interior-finishes",
+      "plannedStart": "2027-03-29",
+      "plannedEnd": "2027-04-30",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "final-installs",
+      "plannedStart": "2027-04-26",
+      "plannedEnd": "2027-05-07",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "closeout",
+      "plannedStart": "2027-05-03",
+      "plannedEnd": "2027-05-14",
+      "status": "not-started",
+      "percent": 0
+    }
+  ],
+  "issues": [
+    {
+      "id": "GT-01",
+      "title": "Solid limestone found while drilling piers",
+      "category": "site-condition",
+      "status": "open",
+      "raisedOn": "2026-10-28",
+      "resolvedOn": null,
+      "expectedResolution": "2026-11-27",
+      "impactDays": 10,
+      "stage": "foundation",
+      "owner": "Megan Shaw",
+      "description": "Pier drilling hit hard limestone at 6 ft on the downhill side, shallower than the soils report predicted. The drilling crew needs a rock auger, and 9 of 22 piers must be re-engineered as rock-socketed piers.",
+      "nextStep": "Rock auger rig arrives Nov 16; the structural engineer is revising pier details."
+    },
+    {
+      "id": "GT-02",
+      "title": "Change order for rock drilling awaiting client approval",
+      "category": "change-order",
+      "status": "open",
+      "raisedOn": "2026-11-04",
+      "resolvedOn": null,
+      "expectedResolution": "2026-11-13",
+      "impactDays": 4,
+      "stage": "foundation",
+      "owner": "Dr. Priya Raman (client)",
+      "description": "Change order CO-03 for rock drilling and the pier redesign: $24,800. Work on the affected piers can't continue until it is signed.",
+      "nextStep": "Client meeting Nov 12 to walk through the engineer's letter and sign CO-03."
+    }
+  ],
+  "inspections": [
+    { "name": "Erosion control", "date": "2026-10-14", "result": "passed" },
+    { "name": "Pier holes (uphill side, 13 piers)", "date": "2026-11-05", "result": "passed" },
+    { "name": "Pier holes (downhill side)", "date": "2026-11-24", "result": "scheduled" }
+  ],
+  "updates": [
+    {
+      "date": "2026-11-09",
+      "author": "Megan Shaw",
+      "note": "Uphill piers poured. Downhill side paused until the rock auger arrives Nov 16."
+    },
+    {
+      "date": "2026-11-04",
+      "author": "Alan Brooks",
+      "note": "Sent CO-03 ($24,800) to the client with the engineer's letter."
+    },
+    {
+      "date": "2026-10-28",
+      "author": "Megan Shaw",
+      "note": "Hit limestone at 6 ft on pier P-14. Stopped drilling on the downhill side and called the engineer."
+    }
+  ]
+}

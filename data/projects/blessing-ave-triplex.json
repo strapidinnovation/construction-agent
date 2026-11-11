@@ -1,0 +1,171 @@
+{
+  "id": "blessing-ave-triplex",
+  "name": "Blessing Ave Triplex",
+  "aliases": ["blessing ave", "blessing avenue", "6908 blessing ave", "blessing triplex"],
+  "client": "Nguyen & Patel Investments LLC",
+  "site": { "address": "6908 Blessing Ave, Austin, TX 78752", "zoning": "SF-3", "lotSqft": 11800 },
+  "scope": {
+    "homes": 3,
+    "description": "Three homes on one lot under Austin's HOME rules: two 1,650 sq ft 2-story homes and one 1,650 sq ft cottage",
+    "heatedSqft": 4950
+  },
+  "team": {
+    "builder": "Lone Star Homebuilders",
+    "projectManager": "James Whitfield",
+    "superintendent": "Rosa Delgado"
+  },
+  "dates": { "start": "2026-08-03", "plannedFinish": "2027-06-25", "forecastFinish": "2027-08-13" },
+  "budget": { "contractUsd": 767779, "spentUsd": 58200, "approvedChangeOrdersUsd": 0 },
+  "onHold": null,
+  "stages": [
+    {
+      "stage": "pre-construction",
+      "plannedStart": "2026-08-03",
+      "plannedEnd": "2026-09-11",
+      "actualStart": "2026-08-03",
+      "actualEnd": "2026-09-11",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "permitting",
+      "plannedStart": "2026-08-17",
+      "plannedEnd": "2026-10-02",
+      "actualStart": "2026-08-17",
+      "forecastEnd": "2026-11-20",
+      "status": "in-progress",
+      "percent": 75
+    },
+    {
+      "stage": "site-prep",
+      "plannedStart": "2026-10-05",
+      "plannedEnd": "2026-10-16",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "foundation",
+      "plannedStart": "2026-10-19",
+      "plannedEnd": "2026-11-20",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "framing",
+      "plannedStart": "2026-11-23",
+      "plannedEnd": "2027-01-15",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "dry-in",
+      "plannedStart": "2027-01-18",
+      "plannedEnd": "2027-02-05",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "rough-ins",
+      "plannedStart": "2027-02-08",
+      "plannedEnd": "2027-03-12",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "insulation-drywall",
+      "plannedStart": "2027-03-15",
+      "plannedEnd": "2027-04-02",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "exterior",
+      "plannedStart": "2027-03-15",
+      "plannedEnd": "2027-04-30",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "interior-finishes",
+      "plannedStart": "2027-04-05",
+      "plannedEnd": "2027-05-14",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "final-installs",
+      "plannedStart": "2027-05-17",
+      "plannedEnd": "2027-06-04",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "closeout",
+      "plannedStart": "2027-06-07",
+      "plannedEnd": "2027-06-25",
+      "status": "not-started",
+      "percent": 0
+    }
+  ],
+  "issues": [
+    {
+      "id": "BA-01",
+      "title": "Second permit review cycle: site plan comments",
+      "category": "permit",
+      "status": "resolved",
+      "raisedOn": "2026-09-18",
+      "resolvedOn": "2026-10-09",
+      "impactDays": 21,
+      "stage": "permitting",
+      "owner": "Architect (Eastside Design Studio)",
+      "description": "Reviewers asked for revised impervious cover numbers and a tree survey for a 26-inch heritage oak near unit 3. Drawings were revised and resubmitted.",
+      "nextStep": null
+    },
+    {
+      "id": "BA-02",
+      "title": "Third permit review cycle: fire separation between units",
+      "category": "permit",
+      "status": "open",
+      "raisedOn": "2026-10-23",
+      "resolvedOn": null,
+      "expectedResolution": "2026-11-20",
+      "impactDays": 14,
+      "stage": "permitting",
+      "owner": "James Whitfield",
+      "description": "The building reviewer wants a 1-hour fire-rated wall detail between the two attached units. The architect sent the detail on Nov 6; the City is reviewing it.",
+      "nextStep": "Follow up with the reviewer on Nov 13; the permit is expected around Nov 20 if no new comments come back."
+    },
+    {
+      "id": "BA-03",
+      "title": "Austin Energy service application backlog",
+      "category": "utility",
+      "status": "open",
+      "raisedOn": "2026-10-14",
+      "resolvedOn": null,
+      "expectedResolution": "2026-12-04",
+      "impactDays": 14,
+      "stage": "site-prep",
+      "owner": "Rosa Delgado",
+      "description": "Austin Energy is taking about six weeks to approve new multi-unit service applications. Temporary power is needed before site work can start.",
+      "nextStep": "Rent a generator for the first two weeks of site prep if approval slips past Dec 4."
+    }
+  ],
+  "inspections": [],
+  "updates": [
+    {
+      "date": "2026-11-06",
+      "author": "James Whitfield",
+      "note": "Fire-rated wall detail submitted to the City. Waiting on the third review."
+    },
+    {
+      "date": "2026-10-23",
+      "author": "James Whitfield",
+      "note": "Third round of comments came back, only one item this time (fire separation)."
+    },
+    {
+      "date": "2026-10-14",
+      "author": "Rosa Delgado",
+      "note": "Austin Energy says six weeks for the service approval. Looking at generator rental as a fallback."
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+{
+  "id": "manchaca-road-fourplex",
+  "name": "Manchaca Road Fourplex",
+  "aliases": ["manchaca", "manchaca rd", "manchaca fourplex", "7300 manchaca rd"],
+  "client": "Southpoint Housing Partners",
+  "site": { "address": "7300 Manchaca Rd, Austin, TX 78745", "zoning": "MF-2", "lotSqft": 14200 },
+  "scope": {
+    "homes": 4,
+    "description": "A 2-story fourplex, four 2 bed / 2 bath units of 1,100 sq ft each with surface parking",
+    "heatedSqft": 4400
+  },
+  "team": {
+    "builder": "Lone Star Homebuilders",
+    "projectManager": "James Whitfield",
+    "superintendent": "Dave Kim"
+  },
+  "dates": { "start": "2026-08-03", "plannedFinish": "2027-08-27", "forecastFinish": "2027-10-08" },
+  "budget": { "contractUsd": 1140000, "spentUsd": 96800, "approvedChangeOrdersUsd": 0 },
+  "onHold": {
+    "since": "2026-10-23",
+    "reason": "The lender paused construction loan draws until an updated appraisal is done, after rising rates changed the loan terms."
+  },
+  "stages": [
+    {
+      "stage": "pre-construction",
+      "plannedStart": "2026-08-03",
+      "plannedEnd": "2026-09-04",
+      "actualStart": "2026-08-03",
+      "actualEnd": "2026-09-04",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "permitting",
+      "plannedStart": "2026-08-17",
+      "plannedEnd": "2026-10-02",
+      "actualStart": "2026-08-17",
+      "actualEnd": "2026-10-02",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "site-prep",
+      "plannedStart": "2026-10-05",
+      "plannedEnd": "2026-10-23",
+      "actualStart": "2026-10-05",
+      "forecastEnd": "2026-12-04",
+      "status": "in-progress",
+      "percent": 30
+    },
+    {
+      "stage": "foundation",
+      "plannedStart": "2026-10-26",
+      "plannedEnd": "2026-12-04",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "framing",
+      "plannedStart": "2026-12-07",
+      "plannedEnd": "2027-02-26",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "dry-in",
+      "plannedStart": "2027-03-01",
+      "plannedEnd": "2027-03-26",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "rough-ins",
+      "plannedStart": "2027-03-29",
+      "plannedEnd": "2027-05-07",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "insulation-drywall",
+      "plannedStart": "2027-05-10",
+      "plannedEnd": "2027-06-04",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "exterior",
+      "plannedStart": "2027-05-10",
+      "plannedEnd": "2027-06-25",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "interior-finishes",
+      "plannedStart": "2027-06-07",
+      "plannedEnd": "2027-07-23",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "final-installs",
+      "plannedStart": "2027-07-26",
+      "plannedEnd": "2027-08-13",
+      "status": "not-started",
+      "percent": 0
+    },
+    {
+      "stage": "closeout",
+      "plannedStart": "2027-08-09",
+      "plannedEnd": "2027-08-27",
+      "status": "not-started",
+      "percent": 0
+    }
+  ],
+  "issues": [
+    {
+      "id": "MR-01",
+      "title": "Construction loan draws paused by the lender",
+      "category": "financing",
+      "status": "open",
+      "raisedOn": "2026-10-23",
+      "resolvedOn": null,
+      "expectedResolution": "2026-12-04",
+      "impactDays": 42,
+      "stage": "site-prep",
+      "owner": "Southpoint Housing Partners (client)",
+      "description": "The lender won't release the next draw until an updated appraisal is complete. Site work stopped after clearing and erosion control; the crew has been moved to other jobs.",
+      "nextStep": "Appraisal visit on Nov 17; the lender expects a decision about two weeks later. Work restarts the week after the draw is released."
+    }
+  ],
+  "inspections": [{ "name": "Erosion control", "date": "2026-10-12", "result": "passed" }],
+  "updates": [
+    {
+      "date": "2026-11-05",
+      "author": "James Whitfield",
+      "note": "Appraiser confirmed for Nov 17. Site is secured; silt fence checked after last week's rain."
+    },
+    {
+      "date": "2026-10-23",
+      "author": "James Whitfield",
+      "note": "Lender paused draws pending a new appraisal. Demobilized the site crew."
+    }
+  ]
+}

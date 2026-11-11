@@ -1,0 +1,38 @@
+{
+  "reasoning": "Hand-written test layout: entry and stairs on the left, living front-right, kitchen and dining at the rear, half bath off the hall.",
+  "walls": [
+    { "x1": 0, "y1": 0, "x2": 30, "y2": 0, "exterior": true },
+    { "x1": 30, "y1": 0, "x2": 30, "y2": 37, "exterior": true },
+    { "x1": 30, "y1": 37, "x2": 0, "y2": 37, "exterior": true },
+    { "x1": 0, "y1": 37, "x2": 0, "y2": 0, "exterior": true },
+    { "x1": 10, "y1": 0, "x2": 10, "y2": 20, "exterior": false },
+    { "x1": 0, "y1": 20, "x2": 30, "y2": 20, "exterior": false },
+    { "x1": 0, "y1": 14, "x2": 10, "y2": 14, "exterior": false },
+    { "x1": 5, "y1": 20, "x2": 5, "y2": 26, "exterior": false },
+    { "x1": 0, "y1": 26, "x2": 5, "y2": 26, "exterior": false }
+  ],
+  "openings": [
+    { "wall": 0, "kind": "door", "offset": 3, "width": 3 },
+    { "wall": 0, "kind": "window", "offset": 14, "width": 6 },
+    { "wall": 0, "kind": "window", "offset": 22, "width": 4 },
+    { "wall": 1, "kind": "window", "offset": 6, "width": 5 },
+    { "wall": 1, "kind": "window", "offset": 26, "width": 4 },
+    { "wall": 2, "kind": "window", "offset": 4, "width": 6 },
+    { "wall": 2, "kind": "door", "offset": 14, "width": 3 },
+    { "wall": 2, "kind": "window", "offset": 22, "width": 4 },
+    { "wall": 3, "kind": "window", "offset": 3, "width": 4 },
+    { "wall": 4, "kind": "door", "offset": 15, "width": 3 },
+    { "wall": 6, "kind": "door", "offset": 6, "width": 3 },
+    { "wall": 5, "kind": "opening", "offset": 13, "width": 12 },
+    { "wall": 5, "kind": "door", "offset": 6, "width": 3 },
+    { "wall": 7, "kind": "door", "offset": 1.5, "width": 2.5 }
+  ],
+  "rooms": [
+    { "name": "Entry / Stairs", "x": 5, "y": 7 },
+    { "name": "Living", "x": 20, "y": 10 },
+    { "name": "Hall", "x": 5, "y": 17 },
+    { "name": "Half bath", "x": 2.5, "y": 23.5 },
+    { "name": "Dining", "x": 10, "y": 31 },
+    { "name": "Kitchen", "x": 22, "y": 30 }
+  ]
+}

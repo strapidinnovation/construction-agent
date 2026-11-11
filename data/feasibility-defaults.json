@@ -1,0 +1,45 @@
+{
+  "_about": "Default assumptions for the feasibility report (src/agents/feasibility.ts). Percentages are fractions (0.08 = 8%). Every report lists the values it used.",
+
+  "landClosingPct": 0.02,
+  "softCostPct": 0.08,
+  "utilityFeesPerHome": 15000,
+  "propertyTaxPct": 0.02,
+  "defaultBuildMonths": 10,
+  "typicalBuildCostPerSqft": { "low": 150, "high": 300 },
+
+  "constructionLoan": {
+    "loanToCostPct": 0.75,
+    "interestPct": 0.085,
+    "originationFeePct": 0.01,
+    "averageDrawnPct": 0.6
+  },
+
+  "sell": {
+    "sellingCostPct": 0.06,
+    "monthsToSell": 3,
+    "insurancePerHomePerYear": 3000
+  },
+
+  "rent": {
+    "vacancyPct": 0.05,
+    "managementPct": 0.08,
+    "maintenancePct": 0.05,
+    "insurancePerHomePerYear": 3000,
+    "mortgage": { "loanToValuePct": 0.75, "interestPct": 0.07, "years": 30 }
+  },
+
+  "comps": {
+    "radiusMiles": [1.5, 3, 5],
+    "minComps": 5,
+    "sizeTolerancePct": 0.3
+  },
+
+  "verdict": {
+    "sellGreenMarginPct": 0.15,
+    "sellAmberMarginPct": 0.08,
+    "sellStressPriceDropPct": 0.1,
+    "rentGreenYieldPct": 0.065,
+    "rentAmberYieldPct": 0.055
+  }
+}

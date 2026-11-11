@@ -1,0 +1,180 @@
+{
+  "id": "humming-bird-lane-residence",
+  "name": "Humming Bird Lane Residence",
+  "aliases": ["humming bird", "hummingbird", "humming bird ln", "5502 humming bird ln"],
+  "client": "The Alvarez family",
+  "site": {
+    "address": "5502 Humming Bird Ln, Austin, TX 78745",
+    "zoning": "SF-3",
+    "lotSqft": 9150
+  },
+  "scope": {
+    "homes": 1,
+    "description": "One 1-story house, 3 bed / 2 bath, 1,850 sq ft, 2-car garage",
+    "heatedSqft": 1850
+  },
+  "team": {
+    "builder": "Hill Country Custom Homes",
+    "projectManager": "Alan Brooks",
+    "superintendent": "Luis Ortega"
+  },
+  "dates": {
+    "start": "2025-09-08",
+    "plannedFinish": "2026-06-26",
+    "forecastFinish": "2026-07-10",
+    "actualFinish": "2026-07-10"
+  },
+  "budget": { "contractUsd": 368000, "spentUsd": 374900, "approvedChangeOrdersUsd": 6900 },
+  "onHold": null,
+  "stages": [
+    {
+      "stage": "pre-construction",
+      "plannedStart": "2025-09-08",
+      "plannedEnd": "2025-10-03",
+      "actualStart": "2025-09-08",
+      "actualEnd": "2025-10-03",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "permitting",
+      "plannedStart": "2025-09-22",
+      "plannedEnd": "2025-11-07",
+      "actualStart": "2025-09-22",
+      "actualEnd": "2025-11-07",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "site-prep",
+      "plannedStart": "2025-11-10",
+      "plannedEnd": "2025-11-21",
+      "actualStart": "2025-11-10",
+      "actualEnd": "2025-11-26",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "foundation",
+      "plannedStart": "2025-11-24",
+      "plannedEnd": "2025-12-26",
+      "actualStart": "2025-12-01",
+      "actualEnd": "2026-01-02",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "framing",
+      "plannedStart": "2025-12-29",
+      "plannedEnd": "2026-02-13",
+      "actualStart": "2026-01-05",
+      "actualEnd": "2026-02-20",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "dry-in",
+      "plannedStart": "2026-02-16",
+      "plannedEnd": "2026-03-06",
+      "actualStart": "2026-02-23",
+      "actualEnd": "2026-03-20",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "rough-ins",
+      "plannedStart": "2026-03-09",
+      "plannedEnd": "2026-04-03",
+      "actualStart": "2026-03-23",
+      "actualEnd": "2026-04-17",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "insulation-drywall",
+      "plannedStart": "2026-04-06",
+      "plannedEnd": "2026-04-24",
+      "actualStart": "2026-04-20",
+      "actualEnd": "2026-05-08",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "exterior",
+      "plannedStart": "2026-04-06",
+      "plannedEnd": "2026-05-15",
+      "actualStart": "2026-04-20",
+      "actualEnd": "2026-05-29",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "interior-finishes",
+      "plannedStart": "2026-04-27",
+      "plannedEnd": "2026-06-05",
+      "actualStart": "2026-05-11",
+      "actualEnd": "2026-06-19",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "final-installs",
+      "plannedStart": "2026-06-08",
+      "plannedEnd": "2026-06-19",
+      "actualStart": "2026-06-22",
+      "actualEnd": "2026-07-03",
+      "status": "done",
+      "percent": 100
+    },
+    {
+      "stage": "closeout",
+      "plannedStart": "2026-06-15",
+      "plannedEnd": "2026-06-26",
+      "actualStart": "2026-06-29",
+      "actualEnd": "2026-07-10",
+      "status": "done",
+      "percent": 100
+    }
+  ],
+  "issues": [
+    {
+      "id": "HB-01",
+      "title": "Rain during site prep",
+      "category": "weather",
+      "status": "resolved",
+      "raisedOn": "2025-11-17",
+      "resolvedOn": "2025-11-26",
+      "impactDays": 5,
+      "stage": "site-prep",
+      "owner": "Luis Ortega",
+      "description": "A wet week in November delayed the building pad.",
+      "nextStep": null
+    },
+    {
+      "id": "HB-02",
+      "title": "Windows delivered with the wrong egress size",
+      "category": "material",
+      "status": "resolved",
+      "raisedOn": "2026-03-02",
+      "resolvedOn": "2026-03-18",
+      "impactDays": 9,
+      "stage": "dry-in",
+      "owner": "Alan Brooks",
+      "description": "Two bedroom windows were too small to meet egress code and had to be re-ordered, delaying dry-in.",
+      "nextStep": null
+    }
+  ],
+  "inspections": [
+    { "name": "Foundation", "date": "2025-12-30", "result": "passed" },
+    { "name": "Framing", "date": "2026-02-19", "result": "passed" },
+    { "name": "Rough-in", "date": "2026-04-15", "result": "passed" },
+    { "name": "Final (certificate of occupancy)", "date": "2026-07-08", "result": "passed" }
+  ],
+  "updates": [
+    {
+      "date": "2026-07-10",
+      "author": "Alan Brooks",
+      "note": "Keys handed over to the Alvarez family. Project closed."
+    }
+  ]
+}
