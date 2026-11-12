@@ -1,10 +1,55 @@
+/**
+ * The skills' model calls go through the two functions here:
+ *   - chatJson: a reply that must match a JSON Schema (router, estimator, ...),
+ *   - chatText: long free text with progress (the house designer).
+ * (The agent talks to Claude through the Agent SDK instead; see agent/agent.ts.)
+ *
+ * Two backends can answer them, chosen with LLM_BACKEND:
+ *   - "claude-code" (default): Claude, through the Claude Code command line and
+ *     the subscription logged in on this computer (see claudeCode.ts),
+ *   - "ollama": a local model such as qwen3.5:9b, run by Ollama.
+ */
 import ollama from "ollama";
+import { runClaude } from "./claudeCode.ts";
 
-export const MODEL = "qwen3.5:9b";
+export const BACKEND: "claude-code" | "ollama" =
+  process.env.LLM_BACKEND === "ollama" ? "ollama" : "claude-code";
+const CLAUDE = BACKEND === "claude-code";
 
-export const DESIGN_MODEL = process.env.DESIGN_MODEL || MODEL;
+/** A model name from .env, or `fallback`. Ollama names ("qwen3.5:9b", always with a ":tag") can't run on Claude. */
+function claudeModel(name: string, fallback: string): string {
+  const value = process.env[name]?.trim();
+  return value && !value.includes(":") ? value : fallback;
+}
 
-export const ESTIMATE_MODEL = process.env.ESTIMATE_MODEL || MODEL;
+/**
+ * A model name from .env, or the backend's default. On Claude, Ollama names
+ * are skipped, so a .env written for Ollama doesn't break the switch.
+ */
+function modelSetting(name: string, claudeDefault: string, ollamaDefault: string): string {
+  if (CLAUDE) return claudeModel(name, claudeDefault);
+  return process.env[name]?.trim() || ollamaDefault;
+}
+
+/** General-purpose model: project summaries, delay explanations, feasibility verdicts. */
+export const MODEL = CLAUDE ? "sonnet" : "qwen3.5:9b";
+
+/** Reads every Slack message to decide what is wanted, so it should be fast. */
+export const ROUTER_MODEL = modelSetting("ROUTER_MODEL", "haiku", MODEL);
+
+export const DESIGN_MODEL = modelSetting("DESIGN_MODEL", "sonnet", MODEL);
+
+export const ESTIMATE_MODEL = modelSetting("ESTIMATE_MODEL", "sonnet", MODEL);
+
+/** The model that drives the agent. Always Claude: the Agent SDK only runs Claude models. */
+export const PLANNER_MODEL = claudeModel("PLANNER_MODEL", "sonnet");
+
+/** JSON Schemas from zod carry a "$schema" key, which isn't part of the form itself. */
+function withoutMeta(schema: object): object {
+  const copy = { ...(schema as Record<string, unknown>) };
+  delete copy.$schema;
+  return copy;
+}
 
 export async function chatJson(
   system: string,
@@ -12,6 +57,18 @@ export async function chatJson(
   schema: object,
   opts: { model?: string; numPredict?: number; numCtx?: number; temperature?: number } = {},
 ): Promise<string> {
+  if (CLAUDE) {
+    const reply = await runClaude({
+      model: opts.model ?? MODEL,
+      system,
+      prompt: user,
+      schema: withoutMeta(schema),
+      effort: "low",
+    });
+    if (reply.truncated) throw new Error("The model's reply hit the output limit and was cut off.");
+    // Callers parse the JSON text themselves, as with Ollama.
+    return JSON.stringify(reply.structured);
+  }
   const res = await ollama.chat({
     model: opts.model ?? MODEL,
     messages: [
@@ -40,6 +97,16 @@ export async function chatText(
   user: string,
   opts: { think?: boolean; onProgress?: (p: Progress) => void } = {},
 ): Promise<{ content: string; truncated: boolean }> {
+  if (CLAUDE) {
+    const reply = await runClaude({
+      model,
+      system,
+      prompt: user,
+      effort: opts.think ? undefined : "low",
+      onText: (chars) => opts.onProgress?.({ phase: "writing", chars }),
+    });
+    return { content: reply.text, truncated: reply.truncated };
+  }
   const stream = await ollama.chat({
     model,
     messages: [

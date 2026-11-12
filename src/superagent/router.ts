@@ -13,8 +13,9 @@
 import { existsSync } from "node:fs";
 import { z } from "zod";
 import { usd } from "../listingFormat.ts";
-import { chatJson } from "../llm.ts";
+import { chatJson, ROUTER_MODEL } from "../llm.ts";
 import type { Session } from "./sessions.ts";
+import { PROJECT_FILTERS } from "./skills/projects.ts";
 
 /**
  * The form Qwen fills in.
@@ -37,6 +38,7 @@ export const Request = z.object({
     "feasibility",
     "status",
     "projects",
+    "goal",
     "cancel",
     "help",
   ]),
@@ -47,7 +49,7 @@ export const Request = z.object({
   lot: z.string(),
   startDate: z.string(),
   projectName: z.string(),
-  projectFilter: z.enum(["all", "behind", "on-hold"]),
+  projectFilter: z.enum(PROJECT_FILTERS),
   projectTopic: z.enum(["overview", "delay"]),
 });
 export type Request = z.infer<typeof Request>;
@@ -65,6 +67,14 @@ intent:
   The status of a named construction project ("status of the River Bend project") is "projects", not "status".
 - "projects": the company's ongoing construction projects: list them, which are delayed or on hold,
   or one project by name ("what's happening with River Bend?", "why is the Blessing Ave job late?").
+- "goal": a request that needs SEVERAL steps or a decision between options, which the agent works out on its own:
+  comparing or ranking properties, plans or projects ("compare River Bend and Brass Buttons", "which plan makes the most money?"),
+  finding the best option ("find me the best lot under 300k in Austin to build and sell"),
+  combining actions ("find land in Austin and check which lots flood", "design and assess Corral Lane"),
+  or questions across several projects ("which delayed projects have permit problems and what's next on each?",
+  "which projects need attention and why?").
+  A request for ONE action on one thing is that action's intent, not "goal".
+  The same action on SEVERAL properties ("how long would each take to build?", "estimate both") is a "goal".
 - "cancel": stop or cancel the job that is running or waiting ("stop", "cancel", "never mind").
 - "help": greetings, questions about what the bot can do, or anything else.
 
@@ -79,7 +89,11 @@ lot: a lot size given for a design, as "WIDTHxDEPTH" in feet (e.g. "60x150") or 
 startDate: when construction should start, as "YYYY-MM-DD" (e.g. "starting Jan 4" = the next January 4th), or "" if none.
 projectName: the construction project asked about, as the user wrote it ("River Bend", "Blessing Ave"), or "" for a list.
   If they say "it" or "that project" and the thread's last project is known, use that project's name.
-projectFilter: "behind" for lists of delayed / late / behind / at-risk projects, "on-hold" for paused projects, otherwise "all".
+projectFilter: for a list of projects,
+  "delayed" when asking which are delayed or late,
+  "behind" for behind schedule or at risk,
+  "attention" for projects that need attention, have problems or are in trouble (delayed, at risk or on hold),
+  "on-hold" for paused projects, otherwise "all".
 projectTopic: "delay" when asking why a project is late or what is causing a delay, otherwise "overview".
 
 For a search follow-up that leaves out the city or budget (e.g. "same but under 200k"),
@@ -90,7 +104,7 @@ reuse the missing value from the thread's last search.`;
  * resolve "the second one" or "same city but cheaper" — it can only use what
  * we tell it here, since it has no other memory of the conversation.
  */
-function threadSummary(session: Session): string {
+export function threadSummary(session: Session): string {
   const lines: string[] = [];
   if (session.search)
     lines.push(
@@ -120,11 +134,14 @@ function threadSummary(session: Session): string {
  * `projectNames` are the construction projects in data/projects/. Telling the
  * model their names lets it recognize "tell me about Manchaca" as a project
  * question rather than a land search in the town of Manchaca, TX.
+ * `agentNote` describes the agent's goal that just finished here, so a reply
+ * to it ("yes, run those") is recognized as a follow-up goal.
  */
 export async function route(
   message: string,
   session: Session,
   projectNames: string[] = [],
+  agentNote?: string,
 ): Promise<Request> {
   // The model has no clock, so today's date is included for relative dates
   // like "next month" or "Jan 4" (which year?).
@@ -132,7 +149,13 @@ export async function route(
   const projects = projectNames.length
     ? `\nOngoing construction projects (a message naming one of these, even partly, is a "projects" question): ${projectNames.join(", ")}.\n`
     : "";
-  const user = `Today is ${today}.\n${projects}\nThread so far:\n${threadSummary(session)}\n\nLatest message:\n${message}`;
-  const raw = await chatJson(SYSTEM, user, z.toJSONSchema(Request));
-  return Request.parse(JSON.parse(raw));
+  const thread = threadSummary(session) + (agentNote ? `\n${agentNote}` : "");
+  const user = `Today is ${today}.\n${projects}\nThread so far:\n${thread}\n\nLatest message:\n${message}`;
+  const raw = await chatJson(SYSTEM, user, z.toJSONSchema(Request), { model: ROUTER_MODEL });
+  // The instructions say `"" if none`, and some models copy that literally as
+  // the two characters "" instead of leaving the field empty.
+  const parsed = JSON.parse(raw, (_key, value: unknown) =>
+    typeof value === "string" && /^\s*(""|'')?\s*$/.test(value) ? "" : value,
+  ) as unknown;
+  return Request.parse(parsed);
 }

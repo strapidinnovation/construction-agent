@@ -61,6 +61,8 @@ const EXAMPLES = [
   "list ongoing projects",
   "which projects are delayed?",
   "why is River Bend late?",
+  "find the best lot under 300k in Austin to build and sell",
+  "compare the plans for Brass Buttons and Corral Lane",
 ];
 
 /** The last line of the help message, describing what the bot remembers in the current reply mode. */
@@ -251,8 +253,13 @@ export const CANCEL_BUTTON = "cancel_job";
  * can still be cancelled. The button carries the job's id, so with several
  * jobs queued it cancels exactly this one. Finished/stopped statuses are drawn
  * without the button, which also removes it from the message when edited.
+ * `cancelAction` swaps the button's action id (the agent's missions use their own).
  */
-export function statusBlocks(text: string, cancelId?: string): KnownBlock[] {
+export function statusBlocks(
+  text: string,
+  cancelId?: string,
+  cancelAction: string = CANCEL_BUTTON,
+): KnownBlock[] {
   const blocks: KnownBlock[] = [{ type: "section", text: { type: "mrkdwn", text } }];
   if (cancelId)
     blocks.push({
@@ -260,7 +267,7 @@ export function statusBlocks(text: string, cancelId?: string): KnownBlock[] {
       elements: [
         {
           type: "button",
-          action_id: CANCEL_BUTTON,
+          action_id: cancelAction,
           text: { type: "plain_text", text: "Cancel" },
           style: "danger",
           value: cancelId,
@@ -301,7 +308,7 @@ export function limitReply(max: number): Reply {
   };
 }
 
-export function ollamaDownReply(problem: string): Reply {
+export function modelDownReply(problem: string): Reply {
   return { text: `:warning: I can't start that right now: ${problem}` };
 }
 
@@ -709,16 +716,19 @@ function currentStageText(p: Project): string {
 export function projectsListReply(projects: Project[], filter: ProjectFilter): Reply {
   const what = {
     all: "Ongoing projects",
+    delayed: "Delayed projects",
     behind: "Projects behind schedule",
+    attention: "Projects that need attention",
     "on-hold": "Projects on hold",
   }[filter];
-  if (!projects.length)
-    return {
-      text:
-        filter === "all"
-          ? "There are no ongoing projects in data/projects/."
-          : `No ${filter === "behind" ? "projects are behind schedule" : "projects are on hold"} right now.`,
-    };
+  const none = {
+    all: "There are no ongoing projects in data/projects/.",
+    delayed: "No projects are delayed right now.",
+    behind: "No projects are behind schedule right now.",
+    attention: "No projects need attention right now: everything is on track.",
+    "on-hold": "No projects are on hold right now.",
+  }[filter];
+  if (!projects.length) return { text: none };
 
   const blocks: KnownBlock[] = [
     { type: "section", text: { type: "mrkdwn", text: `*${what} (${projects.length})*` } },
@@ -900,9 +910,10 @@ export function projectAmbiguousReply(query: string, options: Project[]): Reply 
   };
 }
 
-/** A plain summary of the thread memory, for "status". */
-export function statusReply(s: Session): Reply {
+/** A plain summary of the thread memory, for "status". `goal` is the agent's current mission here, if any. */
+export function statusReply(s: Session, goal?: string): Reply {
   const lines: string[] = [];
+  if (goal) lines.push(`• Working on: _${goal}_`);
   if (s.search)
     lines.push(`• Last search: *${s.search.city}*, ${usd(s.search.lo)} to ${usd(s.search.hi)}`);
   if (s.listings.length) lines.push(`• Listings shown: ${s.listings.map(street).join(", ")}`);
@@ -950,6 +961,11 @@ export function errorReply(err: unknown): Reply {
   if (/fetch failed|ECONNREFUSED/i.test(message))
     return {
       text: "My AI model isn't reachable right now (Ollama is not running). Please try again in a bit.",
+    };
+  // A Claude subscription has usage limits that reset after a few hours.
+  if (/usage limit|rate limit|hit your limit|limit reached/i.test(message))
+    return {
+      text: "I've reached my Claude usage limit for now. Please try again later; the limit resets every few hours.",
     };
   return { text: `Something went wrong: ${message}` };
 }

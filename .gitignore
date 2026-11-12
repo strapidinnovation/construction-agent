@@ -6,3 +6,5 @@ __pycache__
 output
 outputs
 data/slack-sessions.json*
+data/missions/
+data/digest.json

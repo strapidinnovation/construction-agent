@@ -18,7 +18,8 @@ import { dirname, join } from "node:path";
 import type { Listing } from "../agents/landSearch.ts";
 import { PROJECT_ROOT } from "../paths.ts";
 
-const FILE = join(PROJECT_ROOT, "data", "slack-sessions.json");
+/** SESSIONS_FILE lets test scripts use their own memory file instead of the bot's. */
+const FILE = process.env.SESSIONS_FILE || join(PROJECT_ROOT, "data", "slack-sessions.json");
 
 /** Threads untouched for this long are dropped so the file does not grow forever. */
 const MAX_AGE_DAYS = 30;
@@ -41,9 +42,33 @@ export type Session = {
   jobs?: SavedJob[];
   /** The construction project last asked about, so "why is it late?" knows which one. */
   projectName?: string;
+  /**
+   * What SuperAgent last answered here, whether a quick answer (a project list)
+   * or an agent goal. A follow-up ("why should I worry about them?") is about
+   * this, so it is what the router and the agent are told.
+   */
+  lastAnswer?: LastAnswer;
   /** ISO timestamp of the last change, used for cleanup. */
   updatedAt: string;
 };
+
+export type LastAnswer = {
+  /** The user's message that was answered. */
+  request: string;
+  /** The answer, or a short description of it ("Listed 5 projects: …"). */
+  summary: string;
+  /** ISO timestamp of the answer. */
+  at: string;
+};
+
+/** How long after an answer a new message can still be a follow-up to it. */
+const FOLLOW_UP_MS = 60 * 60 * 1000;
+
+/** The last answer in this conversation, if it was recent enough to be followed up on. */
+export function recentAnswer(session: Session): LastAnswer | undefined {
+  const a = session.lastAnswer;
+  return a && Date.now() - Date.parse(a.at) < FOLLOW_UP_MS ? a : undefined;
+}
 
 /** Everything needed to start a slow job again: what kind it is, who asked, and its inputs. */
 export type SavedJob = {

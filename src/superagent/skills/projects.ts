@@ -270,23 +270,29 @@ const STATUS_ORDER: Record<ProjectStatus, number> = {
   completed: 4,
 };
 
-export type ProjectFilter = "all" | "behind" | "on-hold";
-
 /**
- * Ongoing projects (completed ones are left out), most urgent first.
- * - "behind":  delayed or at risk.
- * - "on-hold": paused projects only.
+ * Which ongoing projects a list shows:
+ * - "all":       every ongoing project.
+ * - "delayed":   past their planned dates.
+ * - "behind":    delayed or at risk.
+ * - "attention": delayed, at risk or on hold (everything except on track).
+ * - "on-hold":   paused projects only.
  */
+export const PROJECT_FILTERS = ["all", "delayed", "behind", "attention", "on-hold"] as const;
+export type ProjectFilter = (typeof PROJECT_FILTERS)[number];
+
+const FILTER_STATUSES: Record<ProjectFilter, ProjectStatus[]> = {
+  all: ["delayed", "at-risk", "on-hold", "on-track"],
+  delayed: ["delayed"],
+  behind: ["delayed", "at-risk"],
+  attention: ["delayed", "at-risk", "on-hold"],
+  "on-hold": ["on-hold"],
+};
+
+/** Ongoing projects (completed ones are left out) that match `filter`, most urgent first. */
 export function listProjects(filter: ProjectFilter = "all"): Project[] {
   return loadProjects()
-    .filter((p) => p.status !== "completed")
-    .filter((p) =>
-      filter === "behind"
-        ? p.status === "delayed" || p.status === "at-risk"
-        : filter === "on-hold"
-          ? p.status === "on-hold"
-          : true,
-    )
+    .filter((p) => FILTER_STATUSES[filter].includes(p.status))
     .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || b.daysLate - a.daysLate);
 }
 

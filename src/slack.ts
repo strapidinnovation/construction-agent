@@ -31,8 +31,28 @@
  */
 import { basename } from "node:path";
 import { App, LogLevel, type BlockButtonAction } from "@slack/bolt";
-import { DESIGN_MODEL, ESTIMATE_MODEL, MODEL } from "./llm.ts";
-import { checkOllama } from "./superagent/health.ts";
+import {
+  BACKEND,
+  DESIGN_MODEL,
+  ESTIMATE_MODEL,
+  MODEL,
+  PLANNER_MODEL,
+  ROUTER_MODEL,
+} from "./llm.ts";
+import {
+  answerMission,
+  approveMission,
+  cancelMission,
+  resumeMissions,
+} from "./superagent/agent/agent.ts";
+import { getMission } from "./superagent/agent/missions.ts";
+import {
+  MISSION_ANSWER_BUTTON,
+  MISSION_CANCEL_BUTTON,
+  MISSION_GO_BUTTON,
+} from "./superagent/agent/missionUi.ts";
+import { startScheduler } from "./superagent/agent/schedule.ts";
+import { checkModels } from "./superagent/health.ts";
 import { conversationKey, parseKey, type ReplyMode } from "./superagent/sessions.ts";
 import {
   CANCEL_BUTTON,
@@ -101,7 +121,7 @@ const app = new App({
 function conversationOutput(channel: string, threadTs?: string): Output {
   let statusTs: string | undefined; // timestamp (= id) of the status message once posted
   let lastEdit = 0; // when we last edited it
-  let pending: { text: string; cancelId?: string } | undefined; // newest status not yet shown
+  let pending: { text: string; cancelId?: string; cancelAction?: string } | undefined; // newest status not yet shown
   let timer: NodeJS.Timeout | undefined;
 
   const post = async (reply: Reply) => {
@@ -120,12 +140,12 @@ function conversationOutput(channel: string, threadTs?: string): Output {
     clearTimeout(timer);
     timer = undefined;
     if (pending === undefined) return;
-    const { text, cancelId } = pending;
+    const { text, cancelId, cancelAction } = pending;
     pending = undefined;
     lastEdit = Date.now();
     // Always send the blocks: when a job ends, the new blocks have no Cancel
     // button, which removes the old one from the message.
-    const blocks = statusBlocks(text, cancelId);
+    const blocks = statusBlocks(text, cancelId, cancelAction);
     try {
       if (statusTs) await app.client.chat.update({ channel, ts: statusTs, text, blocks });
       else
@@ -144,7 +164,7 @@ function conversationOutput(channel: string, threadTs?: string): Output {
       await post(reply);
     },
     async status(text, opts) {
-      pending = { text, cancelId: opts?.cancelId };
+      pending = { text, cancelId: opts?.cancelId, cancelAction: opts?.cancelAction };
       const wait = STATUS_EVERY_MS - (Date.now() - lastEdit);
       if (!statusTs || wait <= 0) await flush();
       else timer ??= setTimeout(() => void flush(), wait);
@@ -168,7 +188,13 @@ function conversationOutput(channel: string, threadTs?: string): Output {
 /** Build the request context (memory key, who asked, and an Output that posts to the right place). */
 function ctxFor(key: string, user: string): Ctx {
   const { channel, threadTs } = parseKey(key);
-  return { key, user, out: conversationOutput(channel, threadTs), mode: MODE };
+  return {
+    key,
+    user,
+    out: conversationOutput(channel, threadTs),
+    mode: MODE,
+    makeOutput: () => conversationOutput(channel, threadTs),
+  };
 }
 
 /**
@@ -276,16 +302,57 @@ onButton(PROJECT_BUTTON, (ctx, id) => showProjectById(ctx, id, "overview"));
 /** "Why is it late?" under a project's overview. */
 onButton(PROJECT_DELAY_BUTTON, (ctx, id) => showProjectById(ctx, id, "delay"));
 
+/**
+ * The agent's mission buttons. A mission belongs to the conversation it was
+ * started in, so these answer in that conversation (in "user" mode the
+ * clicker's own conversation can be a different one).
+ */
+const missionCtx = (ctx: Ctx, id: string): Ctx => {
+  const m = getMission(id);
+  return m ? ctxFor(m.key, ctx.user) : ctx;
+};
+
+/** "Go" under a proposed plan; the value is the mission id. */
+onButton(MISSION_GO_BUTTON, (ctx, id) => approveMission(missionCtx(ctx, id), id));
+
+/** "Cancel" under a plan or on a mission's checklist. */
+onButton(MISSION_CANCEL_BUTTON, (ctx, id) => cancelMission(missionCtx(ctx, id), id));
+
+/** An answer button under the agent's question; the value is "<mission id>|<option index>". */
+onButton(MISSION_ANSWER_BUTTON, async (ctx, value) => {
+  const [id = "", index = ""] = value.split("|");
+  const m = getMission(id);
+  const answer = m?.pendingQuestion?.options[Number(index)];
+  if (!m || answer === undefined || m.user !== ctx.user) return;
+  await answerMission(missionCtx(ctx, id), id, answer);
+});
+
 await app.start();
 console.log(
   `SuperAgent is running (reply mode: ${MODE}). Tag it in a channel it has been invited to. Ctrl+C to stop.`,
 );
 
-// Startup check: warn in the terminal (not in Slack) if Ollama or a model is
-// missing, so whoever started the bot can fix it before anyone asks.
-const problem = await checkOllama([MODEL, DESIGN_MODEL, ESTIMATE_MODEL]);
+// Startup check: warn in the terminal (not in Slack) if the model backend isn't
+// ready, so whoever started the bot can fix it before anyone asks.
+console.log(
+  `AI models (${BACKEND}): agent ${PLANNER_MODEL}, router ${ROUTER_MODEL}, design ${DESIGN_MODEL}, estimate ${ESTIMATE_MODEL}, other ${MODEL}.`,
+);
+const problem = await checkModels([
+  MODEL,
+  ROUTER_MODEL,
+  DESIGN_MODEL,
+  ESTIMATE_MODEL,
+  PLANNER_MODEL,
+]);
 if (problem) console.warn(`Warning: ${problem}`);
 
-// Pick up jobs that were interrupted by the last restart (see resumeJobs).
+// Pick up jobs and agent missions that were interrupted by the last restart.
 const resumed = await resumeJobs((key, user) => ctxFor(key, user));
 if (resumed) console.log(`Resumed ${resumed} interrupted ${resumed === 1 ? "job" : "jobs"}.`);
+const missions = await resumeMissions((key, user) => ctxFor(key, user));
+if (missions)
+  console.log(`Resumed ${missions} interrupted ${missions === 1 ? "mission" : "missions"}.`);
+
+// Proactive work (the daily project digest), if DIGEST_CHANNEL is set.
+const schedule = startScheduler((key, user) => ctxFor(key, user));
+if (schedule) console.log(`Scheduled: ${schedule}.`);

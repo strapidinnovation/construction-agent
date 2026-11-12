@@ -14,11 +14,17 @@
  * Quick jobs (search, projects, status, help, cancel) answer immediately. Slow jobs
  * (house design, cost estimate, timeline) go into the job queue (queue.ts)
  * and report progress while they run.
+ *
+ * Goals that need several steps ("find the best lot under 300k and tell me if
+ * it's worth building") go to the agent (agent/agent.ts), which decides on its
+ * own which of these skills to use, in what order.
  */
 import { existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { DESIGN_MODEL, ESTIMATE_MODEL, MODEL } from "../llm.ts";
-import { checkOllama } from "./health.ts";
+import { answerMission, cancelMission, startMission } from "./agent/agent.ts";
+import { activeMission, waitingMission } from "./agent/missions.ts";
+import { checkModels } from "./health.ts";
 import {
   allJobs,
   cancel,
@@ -39,8 +45,10 @@ import {
   findListingByUrl,
   forgetJob,
   getSession,
+  recentAnswer,
   saveJob,
   updateSession,
+  type LastAnswer,
   type ReplyMode,
   type SavedJob,
   type Session,
@@ -53,11 +61,15 @@ import {
   findProject,
   listProjects,
   loadProjects,
+  statusText,
   summarizeProject,
   type Project,
 } from "./skills/projects.ts";
 import { planTimeline } from "./skills/timeline.ts";
-import { feasibilityReport } from "./skills/feasibility.ts";
+import { feasibilityReport, type FeasibilityResult } from "./skills/feasibility.ts";
+import type { DesignResult } from "./skills/design.ts";
+import type { EstimateResult } from "./skills/estimate.ts";
+import type { TimelineResult } from "./skills/timeline.ts";
 import {
   cancelledReply,
   cancelReply,
@@ -80,7 +92,7 @@ import {
   noPlanForReply,
   noPlanReply,
   noSuchListingNumberReply,
-  ollamaDownReply,
+  modelDownReply,
   planAmbiguousReply,
   projectAmbiguousReply,
   projectDelayReply,
@@ -101,6 +113,13 @@ import {
 /** How many slow jobs one person may have waiting or running at the same time. */
 const MAX_JOBS_PER_USER = 2;
 
+/** A quick answer to remember as the conversation's last answer, for follow-ups. */
+const answered = (request: string, summary: string): LastAnswer => ({
+  request,
+  summary,
+  at: new Date().toISOString(),
+});
+
 /**
  * Where SuperAgent sends its answers for one conversation. src/slack.ts implements
  * this for Slack; a test can implement it with console.log.
@@ -111,9 +130,10 @@ export type Output = {
   /**
    * Show a progress line. The first call posts a status message; later calls
    * edit that same message, so progress updates don't flood the conversation.
-   * `cancelId` adds a "Cancel" button for that job while it can still be cancelled.
+   * `cancelId` adds a "Cancel" button for that job while it can still be cancelled;
+   * `cancelAction` is the button's action id (default: the job Cancel button).
    */
-  status(text: string, opts?: { cancelId?: string }): Promise<void>;
+  status(text: string, opts?: { cancelId?: string; cancelAction?: string }): Promise<void>;
   /** Upload files (e.g. plan.pdf and plan.png) into the conversation with a short comment. */
   upload(files: { path: string; title: string }[], comment: string): Promise<void>;
 };
@@ -125,24 +145,63 @@ export type Output = {
  * - out:  how to post into that conversation,
  * - mode: how the bot holds conversations (thread / channel / user), used to
  *         describe its memory in the help message.
+ * - makeOutput: a fresh Output for the same conversation. Each Output keeps ONE
+ *         status message, so the agent gives every job it starts its own Output
+ *         (otherwise the jobs would overwrite the agent's checklist).
  */
-export type Ctx = { key: string; user: string; out: Output; mode?: ReplyMode };
+export type Ctx = {
+  key: string;
+  user: string;
+  out: Output;
+  mode?: ReplyMode;
+  makeOutput?: () => Output;
+};
 
 /** Handle one message sent to the bot. */
 export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
+  // The agent asked this person something (approve a plan, pick an option):
+  // their next message is the answer, unless they want to stop.
+  const waiting = waitingMission(ctx.key, ctx.user);
+  if (waiting) {
+    if (/^\s*(cancel|stop|never ?mind|abort)\b/i.test(text)) return cancelMission(ctx, waiting.id);
+    return answerMission(ctx, waiting.id, text);
+  }
+
   const session = getSession(ctx.key);
   const projectNames = loadProjects().map((p) => p.data.name);
-  const request = await route(text, session, projectNames);
+  const recent = recentAnswer(session);
+  const agentNote = recent
+    ? `SuperAgent's last answer here was to "${recent.request}": "${recent.summary.slice(-300)}". A reply that continues it with several steps or several things ("yes, do that", "why for each of them", "now the same for X") is a "goal".`
+    : undefined;
+  const request = await route(text, session, projectNames, agentNote);
   console.log(`  intent: ${JSON.stringify(request)}`);
 
   // Safety net: "status of the X project" sometimes comes back as the
   // conversation "status" intent, but with a project name filled in. A project name means
   // the question is about that project.
   if (request.intent === "status" && request.projectName) request.intent = "projects";
+  // "Which projects need attention, and why?" asks for the reasons behind a
+  // whole list, which means reading each project: a job for the agent.
+  if (
+    request.intent === "projects" &&
+    !request.projectName &&
+    request.projectFilter !== "all" &&
+    request.projectTopic === "delay"
+  )
+    request.intent = "goal";
+  // The single-property skills work on one property; several named ("Brass
+  // Buttons and Corral Lane", "A, B") is a job for the agent.
+  // The same goes for follow-ups to the last answer that point back at
+  // several things ("how long would each take?", "estimate both of them").
+  const singleProperty = ["design", "estimate", "timeline", "feasibility"];
+  const several = /,|;|\band\b|&/i.test(request.listing);
+  const backReference = /\b(each|both|them|those|these|all)\b/i.test(text);
+  if (singleProperty.includes(request.intent) && (several || (recent && backReference)))
+    request.intent = "goal";
 
   switch (request.intent) {
     case "search":
-      return ctx.out.reply(await search(ctx.key, session, request));
+      return ctx.out.reply(await search(ctx.key, session, request, text));
     case "design":
       return startDesign(
         ctx,
@@ -160,11 +219,17 @@ export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
     case "feasibility":
       return startFeasibility(ctx, { name: request.listing || request.projectName });
     case "status":
-      return ctx.out.reply(statusReply(session));
+      return ctx.out.reply(statusReply(session, activeMission(ctx.key)?.goal));
     case "projects":
-      return projects(ctx, session, request);
-    case "cancel":
-      return cancelJob(ctx);
+      return projects(ctx, session, request, text);
+    case "goal":
+      await startMission(ctx, text);
+      return;
+    case "cancel": {
+      // A typed "cancel" stops the agent's mission here first (which also stops its job).
+      const mission = activeMission(ctx.key);
+      return mission ? cancelMission(ctx, mission.id) : cancelJob(ctx);
+    }
     case "help":
       return ctx.out.reply(helpReply(ctx.mode));
   }
@@ -176,7 +241,12 @@ export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
  * 200k"). The router is asked to do this too; doing it here as well makes it
  * reliable even when the model forgets.
  */
-async function search(key: string, session: Session, request: Request): Promise<Reply> {
+async function search(
+  key: string,
+  session: Session,
+  request: Request,
+  text: string,
+): Promise<Reply> {
   const city = request.city || session.search?.city || "";
   const budget = request.budget || session.search?.budget || "";
   const result = await searchLand(city, budget);
@@ -185,10 +255,12 @@ async function search(key: string, session: Session, request: Request): Promise<
   // Only the listings we actually show are remembered, so "#3"
   // always means the third line of the message the user is looking at.
   const shown = result.listings.slice(0, MAX_LISTINGS);
+  const streets = shown.map((l) => l.address.split(",")[0]).join("; ");
   await updateSession(key, {
     search: { city: result.city, budget, lo: result.lo, hi: result.hi },
     listings: shown,
     selected: undefined,
+    lastAnswer: answered(text, `Showed ${shown.length} listings in ${result.city}: ${streets}.`),
   });
   return listingsReply(shown, result.listings.length, result.city, result.lo, result.hi);
 }
@@ -200,28 +272,48 @@ async function search(key: string, session: Session, request: Request): Promise<
 
 /**
  * Answer a question about ongoing projects:
- * - no project name           -> the list (optionally only behind / on hold),
+ * - no project name           -> the list (optionally filtered, e.g. only delayed),
  * - a name                    -> that project's overview,
  * - a name + "why is it late" -> the delay breakdown.
  * "Why is it late?" without a name uses the project last discussed in this conversation.
  */
-async function projects(ctx: Ctx, session: Session, request: Request): Promise<void> {
-  const name =
-    request.projectName || (request.projectTopic === "delay" ? (session.projectName ?? "") : "");
-  if (!name)
-    return ctx.out.reply(
-      projectsListReply(listProjects(request.projectFilter), request.projectFilter),
-    );
+async function projects(ctx: Ctx, session: Session, request: Request, text: string): Promise<void> {
+  // Only a question about one project ("why is it late?") falls back to the
+  // last project discussed; a filtered list ("which are delayed?") never does.
+  const followUp = request.projectTopic === "delay" && request.projectFilter === "all";
+  const name = request.projectName || (followUp ? (session.projectName ?? "") : "");
+  if (!name) {
+    const list = listProjects(request.projectFilter);
+    const names = list
+      .map((p) => `${p.data.name} (${statusText(p.status)}, ${p.daysLate} days late)`)
+      .join("; ");
+    await updateSession(ctx.key, {
+      lastAnswer: answered(text, `Listed ${list.length} projects: ${names || "none"}.`),
+    });
+    return ctx.out.reply(projectsListReply(list, request.projectFilter));
+  }
 
   const found = findProject(name);
   if (found.kind === "not-found") return ctx.out.reply(projectNotFoundReply(name, found.names));
   if (found.kind === "ambiguous") return ctx.out.reply(projectAmbiguousReply(name, found.options));
-  await showProject(ctx, found.project, request.projectTopic);
+  await showProject(ctx, found.project, request.projectTopic, text);
 }
 
 /** Post one project's overview or delay breakdown, and remember it as the conversation's current project. */
-async function showProject(ctx: Ctx, p: Project, topic: "overview" | "delay"): Promise<void> {
-  await updateSession(ctx.key, { projectName: p.data.name });
+async function showProject(
+  ctx: Ctx,
+  p: Project,
+  topic: "overview" | "delay",
+  text = topic === "delay" ? `Why is ${p.data.name} late?` : `Tell me about ${p.data.name}`,
+): Promise<void> {
+  const what = topic === "delay" ? "why it is late" : "an overview";
+  await updateSession(ctx.key, {
+    projectName: p.data.name,
+    lastAnswer: answered(
+      text,
+      `Showed ${what} of ${p.data.name} (${statusText(p.status)}, ${p.daysLate} days late).`,
+    ),
+  });
   if (topic === "delay") {
     const explanation = p.daysLate > 0 && p.delayCauses.length ? await explainDelay(p) : null;
     return ctx.out.reply(projectDelayReply(p, explanation));
@@ -263,12 +355,39 @@ export async function cancelJob(ctx: Ctx, id?: string): Promise<void> {
 //      the status message with each step, then posts the result and files.
 //   5. At every step it checks whether it was cancelled, and stops if so.
 //   6. When it ends (done, failed or cancelled) the saved job is removed.
+//
+// Each job has two entry points:
+//   - queueDesign / queueEstimate / ...: return a `Started` handle. If the job
+//     was refused, it holds the reason; otherwise its `outcome` resolves with
+//     the result when the job ends. The agent uses these to wait for results.
+//   - startDesign / startEstimate / ...: the same, but they post a refusal to
+//     the conversation and don't wait. Messages and buttons use these.
 // ---------------------------------------------------------------------------
 
 /** Thrown from a progress step when the job has been cancelled; unwinds out of the skill. */
 class Cancelled extends Error {}
 
-type JobSpec = {
+/** How a queued job ended. */
+export type JobOutcome<R> =
+  { status: "done"; value: R } | { status: "cancelled" } | { status: "failed"; error: string };
+
+/** The answer to "start this job": refused (with the reply explaining why), or queued. */
+export type Started<R> =
+  { ok: false; reply: Reply } | { ok: true; id: string; outcome: Promise<JobOutcome<R>> };
+
+/**
+ * Options for jobs started by the agent:
+ * - persist: false skips saving the job for a restart. The agent's mission
+ *   is saved instead and starts the job again itself after a restart.
+ */
+export type QueueOpts = { persist?: boolean };
+
+/** Post the refusal (if any) and don't wait for the job; used by messages and buttons. */
+async function postRefusal(ctx: Ctx, started: Started<unknown>): Promise<void> {
+  if (!started.ok) await ctx.out.reply(started.reply);
+}
+
+type JobSpec<R> = {
   kind: JobKind;
   /** The property the job is for (its URL identifies duplicates). */
   listing: Listing;
@@ -280,22 +399,29 @@ type JobSpec = {
   title: string;
   /** Extra line under "Starting…" / "Waiting in line…", e.g. "Waits for the design". */
   note?: string;
-  /** The actual work. Report progress with `step(...)`; post results through `out`. */
-  work: (step: (text: string) => void) => Promise<void>;
+  /** The actual work. Report progress with `step(...)`; post results through `out`; return the result. */
+  work: (step: (text: string) => void) => Promise<R>;
 };
 
-async function queueJob(ctx: Ctx, job: JobSpec): Promise<void> {
+async function queueJob<R>(ctx: Ctx, job: JobSpec<R>, opts: QueueOpts = {}): Promise<Started<R>> {
   const { key, user, out } = ctx;
   const subject = street(job.listing);
+  const persist = opts.persist ?? true;
 
   const duplicate = findDuplicate(job.kind, job.listing.url);
-  if (duplicate) return out.reply(duplicateReply(duplicate));
-  if (jobsForUser(user) >= MAX_JOBS_PER_USER) return out.reply(limitReply(MAX_JOBS_PER_USER));
-  const problem = await checkOllama(job.models);
-  if (problem) return out.reply(ollamaDownReply(problem));
+  if (duplicate) return { ok: false, reply: duplicateReply(duplicate) };
+  if (jobsForUser(user) >= MAX_JOBS_PER_USER)
+    return { ok: false, reply: limitReply(MAX_JOBS_PER_USER) };
+  const problem = await checkModels(job.models);
+  if (problem) return { ok: false, reply: modelDownReply(problem) };
 
   const id = newJobId();
-  await saveJob(key, { id, kind: job.kind, user, listing: job.listing, ...job.saved });
+  if (persist) await saveJob(key, { id, kind: job.kind, user, listing: job.listing, ...job.saved });
+  const forget = () => (persist ? forgetJob(key, id) : Promise.resolve());
+
+  // `outcome` resolves exactly once, whichever way the job ends.
+  let settle!: (o: JobOutcome<R>) => void;
+  const outcome = new Promise<JobOutcome<R>>((resolve) => (settle = resolve));
 
   // Post the "waiting/starting" status BEFORE queueing: if the queue is empty
   // the job starts immediately and its first progress step must come after this.
@@ -311,8 +437,9 @@ async function queueJob(ctx: Ctx, job: JobSpec): Promise<void> {
     label: `${job.kind} ${subject}`,
     // Cancelled while still waiting: it never ran, so just tidy up.
     dropped: async () => {
-      await forgetJob(key, id);
+      await forget();
       await out.status(stepText(job.title, ":octagonal_sign: Cancelled."));
+      settle({ status: "cancelled" });
     },
     run: async (signal) => {
       // Every progress update first checks for a cancel request. Throwing here
@@ -324,22 +451,26 @@ async function queueJob(ctx: Ctx, job: JobSpec): Promise<void> {
       };
       try {
         step("Starting…");
-        await job.work(step);
+        const value = await job.work(step);
         await out.status(stepText(job.title, ":white_check_mark: Done."));
+        settle({ status: "done", value });
       } catch (err) {
         if (signal.aborted || err instanceof Cancelled) {
           await out.status(stepText(job.title, ":octagonal_sign: Cancelled."));
           await out.reply(cancelledReply({ kind: job.kind, subject }));
+          settle({ status: "cancelled" });
         } else {
           console.error(err);
           await out.status(stepText(job.title, ":x: Stopped."));
           await out.reply(jobFailedReply(job.kind, err));
+          settle({ status: "failed", error: err instanceof Error ? err.message : String(err) });
         }
       } finally {
-        await forgetJob(key, id);
+        await forget();
       }
     },
   });
+  return { ok: true, id, outcome };
 }
 
 /**
@@ -348,12 +479,14 @@ async function queueJob(ctx: Ctx, job: JobSpec): Promise<void> {
  * - url:    from the "Design on this lot" button (always exact),
  * - name:   what the user wrote, e.g. "Corral Lane" or "8446" (matched in code),
  * - number: a position, e.g. "#3" or "the third one".
+ * - listing: the listing itself (the agent finds it in its own memory first).
  * With none of them, the lot picked earlier in this conversation is used.
  */
-export type ListingRef = { url?: string; name?: string; number?: number };
+export type ListingRef = { url?: string; name?: string; number?: number; listing?: Listing };
 
 /** Find the listing a request points at, or the reply explaining why it couldn't be found. */
 function listingFor(session: Session, ref: ListingRef): { listing: Listing } | { reply: Reply } {
+  if (ref.listing) return { listing: ref.listing };
   const { listings } = session;
   if (ref.url) {
     // A button under someone else's listings (in "user" mode) isn't in this
@@ -389,32 +522,46 @@ function listingFor(session: Session, ref: ListingRef): { listing: Listing } | {
  * button. Returns as soon as the job is queued.
  */
 export async function startDesign(ctx: Ctx, ref: ListingRef, lotText: string): Promise<void> {
+  await postRefusal(ctx, await queueDesign(ctx, ref, lotText));
+}
+
+export async function queueDesign(
+  ctx: Ctx,
+  ref: ListingRef,
+  lotText: string,
+  opts?: QueueOpts,
+): Promise<Started<DesignResult>> {
   const { key, out } = ctx;
   const found = listingFor(getSession(key), ref);
-  if ("reply" in found) return out.reply(found.reply);
+  if ("reply" in found) return { ok: false, reply: found.reply };
   const { listing } = found;
 
   await updateSession(key, { selected: listing });
-  await queueJob(ctx, {
-    kind: "design",
-    listing,
-    saved: { lotText },
-    models: [DESIGN_MODEL],
-    title: designTitle(listing),
-    work: async (step) => {
-      const result = await designHouse(listing, lotText, step);
-      // Remember the plan folder: estimates and timelines build on it.
-      await updateSession(key, { planDir: result.dir });
-      await out.reply(designDoneReply(listing, result));
-      await out.upload(
-        [
-          { path: result.pngPath, title: "Site and floor plan (preview)" },
-          { path: result.pdfPath, title: "Site and floor plan (PDF)" },
-        ],
-        "Here's the plan. Open the PDF for the full page with notes.",
-      );
+  return queueJob(
+    ctx,
+    {
+      kind: "design",
+      listing,
+      saved: { lotText },
+      models: [DESIGN_MODEL],
+      title: designTitle(listing),
+      work: async (step) => {
+        const result = await designHouse(listing, lotText, step);
+        // Remember the plan folder: estimates and timelines build on it.
+        await updateSession(key, { planDir: result.dir });
+        await out.reply(designDoneReply(listing, result));
+        await out.upload(
+          [
+            { path: result.pngPath, title: "Site and floor plan (preview)" },
+            { path: result.pdfPath, title: "Site and floor plan (PDF)" },
+          ],
+          "Here's the plan. Open the PDF for the full page with notes.",
+        );
+        return result;
+      },
     },
-  });
+    opts,
+  );
 }
 
 /**
@@ -567,36 +714,49 @@ function dependencyNote(target: PlanTarget, what: PlanJob): string | undefined {
  * runs the estimate first (see skills/feasibility.ts).
  */
 export async function startFeasibility(ctx: Ctx, ref: PlanRef = {}): Promise<void> {
+  await postRefusal(ctx, await queueFeasibility(ctx, ref));
+}
+
+export async function queueFeasibility(
+  ctx: Ctx,
+  ref: PlanRef = {},
+  opts?: QueueOpts,
+): Promise<Started<FeasibilityResult>> {
   const target = planFor(ctx, ref, "feasibility");
-  if ("reply" in target) return ctx.out.reply(target.reply);
+  if ("reply" in target) return { ok: false, reply: target.reply };
   const queuedAt = Date.now();
 
-  await queueJob(ctx, {
-    kind: "feasibility",
-    listing: target.listing,
-    saved: { planDir: target.kind === "ready" ? target.planDir : undefined },
-    // The estimate (if it has to run) uses ESTIMATE_MODEL; the summary uses MODEL.
-    models: [ESTIMATE_MODEL, MODEL],
-    title: feasibilityTitle(street(target.listing)),
-    note: dependencyNote(target, "feasibility"),
-    work: async (step) => {
-      const planDir = resolvePlanDir(target, queuedAt, "assess");
-      const result = await feasibilityReport(planDir, step);
-      // If the estimate had to run first, share it too.
-      if (result.estimate) {
-        await ctx.out.reply(estimateDoneReply(result.estimate));
+  return queueJob(
+    ctx,
+    {
+      kind: "feasibility",
+      listing: target.listing,
+      saved: { planDir: target.kind === "ready" ? target.planDir : undefined },
+      // The estimate (if it has to run) uses ESTIMATE_MODEL; the summary uses MODEL.
+      models: [ESTIMATE_MODEL, MODEL],
+      title: feasibilityTitle(street(target.listing)),
+      note: dependencyNote(target, "feasibility"),
+      work: async (step) => {
+        const planDir = resolvePlanDir(target, queuedAt, "assess");
+        const result = await feasibilityReport(planDir, step);
+        // If the estimate had to run first, share it too.
+        if (result.estimate) {
+          await ctx.out.reply(estimateDoneReply(result.estimate));
+          await ctx.out.upload(
+            [{ path: result.estimate.pdfPath, title: "Material and cost estimate (PDF)" }],
+            "The feasibility report needed a cost estimate, so here it is too.",
+          );
+        }
+        await ctx.out.reply(feasibilityDoneReply(result));
         await ctx.out.upload(
-          [{ path: result.estimate.pdfPath, title: "Material and cost estimate (PDF)" }],
-          "The feasibility report needed a cost estimate, so here it is too.",
+          [{ path: result.pdfPath, title: "Feasibility report (PDF)" }],
+          "Here's the full feasibility report: site checks, costs, sell and rent numbers, comparable homes and assumptions.",
         );
-      }
-      await ctx.out.reply(feasibilityDoneReply(result));
-      await ctx.out.upload(
-        [{ path: result.pdfPath, title: "Feasibility report (PDF)" }],
-        "Here's the full feasibility report: site checks, costs, sell and rent numbers, comparable homes and assumptions.",
-      );
+        return result;
+      },
     },
-  });
+    opts,
+  );
 }
 
 /**
@@ -605,26 +765,39 @@ export async function startFeasibility(ctx: Ctx, ref: PlanRef = {}): Promise<voi
  * and the "Estimate cost" button (the exact plan it was posted under).
  */
 export async function startEstimate(ctx: Ctx, ref: PlanRef = {}): Promise<void> {
+  await postRefusal(ctx, await queueEstimate(ctx, ref));
+}
+
+export async function queueEstimate(
+  ctx: Ctx,
+  ref: PlanRef = {},
+  opts?: QueueOpts,
+): Promise<Started<EstimateResult>> {
   const target = planFor(ctx, ref, "estimate");
-  if ("reply" in target) return ctx.out.reply(target.reply);
+  if ("reply" in target) return { ok: false, reply: target.reply };
   const queuedAt = Date.now();
 
-  await queueJob(ctx, {
-    kind: "estimate",
-    listing: target.listing,
-    saved: { planDir: target.kind === "ready" ? target.planDir : undefined },
-    models: [ESTIMATE_MODEL],
-    title: estimateTitle(street(target.listing)),
-    note: dependencyNote(target, "estimate"),
-    work: async (step) => {
-      const result = await estimateCost(resolvePlanDir(target, queuedAt, "estimate"), step);
-      await ctx.out.reply(estimateDoneReply(result));
-      await ctx.out.upload(
-        [{ path: result.pdfPath, title: "Material and cost estimate (PDF)" }],
-        "Here's the full estimate with every material and labor line.",
-      );
+  return queueJob(
+    ctx,
+    {
+      kind: "estimate",
+      listing: target.listing,
+      saved: { planDir: target.kind === "ready" ? target.planDir : undefined },
+      models: [ESTIMATE_MODEL],
+      title: estimateTitle(street(target.listing)),
+      note: dependencyNote(target, "estimate"),
+      work: async (step) => {
+        const result = await estimateCost(resolvePlanDir(target, queuedAt, "estimate"), step);
+        await ctx.out.reply(estimateDoneReply(result));
+        await ctx.out.upload(
+          [{ path: result.pdfPath, title: "Material and cost estimate (PDF)" }],
+          "Here's the full estimate with every material and labor line.",
+        );
+        return result;
+      },
     },
-  });
+    opts,
+  );
 }
 
 /**
@@ -633,27 +806,41 @@ export async function startEstimate(ctx: Ctx, ref: PlanRef = {}): Promise<void> 
  * the timeline" button. `startText` is the start date ("" means next Monday).
  */
 export async function startTimeline(ctx: Ctx, startText: string, ref: PlanRef = {}): Promise<void> {
+  await postRefusal(ctx, await queueTimeline(ctx, startText, ref));
+}
+
+export async function queueTimeline(
+  ctx: Ctx,
+  startText: string,
+  ref: PlanRef = {},
+  opts?: QueueOpts,
+): Promise<Started<TimelineResult>> {
   const target = planFor(ctx, ref, "timeline");
-  if ("reply" in target) return ctx.out.reply(target.reply);
+  if ("reply" in target) return { ok: false, reply: target.reply };
   const queuedAt = Date.now();
 
-  await queueJob(ctx, {
-    kind: "timeline",
-    listing: target.listing,
-    saved: { startText, planDir: target.kind === "ready" ? target.planDir : undefined },
-    models: [ESTIMATE_MODEL],
-    title: timelineTitle(street(target.listing)),
-    note: dependencyNote(target, "timeline"),
-    work: async (step) => {
-      const planDir = resolvePlanDir(target, queuedAt, "plan a timeline for");
-      const result = await planTimeline(planDir, startText, step);
-      await ctx.out.reply(timelineDoneReply(result));
-      await ctx.out.upload(
-        [{ path: result.pdfPath, title: "Construction timeline (PDF)" }],
-        "Here's the full schedule with the Gantt chart, inspections and every task.",
-      );
+  return queueJob(
+    ctx,
+    {
+      kind: "timeline",
+      listing: target.listing,
+      saved: { startText, planDir: target.kind === "ready" ? target.planDir : undefined },
+      models: [ESTIMATE_MODEL],
+      title: timelineTitle(street(target.listing)),
+      note: dependencyNote(target, "timeline"),
+      work: async (step) => {
+        const planDir = resolvePlanDir(target, queuedAt, "plan a timeline for");
+        const result = await planTimeline(planDir, startText, step);
+        await ctx.out.reply(timelineDoneReply(result));
+        await ctx.out.upload(
+          [{ path: result.pdfPath, title: "Construction timeline (PDF)" }],
+          "Here's the full schedule with the Gantt chart, inspections and every task.",
+        );
+        return result;
+      },
     },
-  });
+    opts,
+  );
 }
 
 /**
