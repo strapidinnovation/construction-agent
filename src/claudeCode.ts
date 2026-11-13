@@ -4,7 +4,9 @@
  *
  * Every call is one fresh, locked-down `claude` process:
  *   - no built-in tools (--tools ""), so it can't read files, run commands or
- *     browse; SuperAgent's own tools are the only things it can ask for,
+ *     browse; SuperAgent's own tools are the only things it can ask for.
+ *     A caller may allow web search and page reading (`webSearch`), never
+ *     files or commands,
  *   - no settings, MCP servers, slash commands or saved sessions from this
  *     computer, and it runs in an empty folder,
  *   - our system prompt replaces Claude Code's coding-assistant one.
@@ -19,6 +21,8 @@ import { join } from "node:path";
 /** An empty folder to run in, so no project files or CLAUDE.md are picked up. */
 const WORKDIR = join(tmpdir(), "superagent-claude");
 
+const WEB_TOOLS = "WebSearch,WebFetch";
+
 /** A long design can write for several minutes; anything past this is stuck. */
 const TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -31,6 +35,8 @@ export type ClaudeRequest = {
   schema?: object;
   /** How hard it thinks: "low" for quick routing, higher for planning and design. */
   effort?: "low" | "medium" | "high";
+  /** Let Claude search the web and read pages (WebSearch, WebFetch). */
+  webSearch?: boolean;
   /** Called with the text written so far (streams the reply). Throw from it to cancel. */
   onText?: (chars: number) => void;
 };
@@ -52,7 +58,8 @@ export async function runClaude(req: ClaudeRequest): Promise<ClaudeReply> {
     "--system-prompt",
     req.system,
     "--tools",
-    "",
+    req.webSearch ? WEB_TOOLS : "",
+    ...(req.webSearch ? ["--allowedTools", WEB_TOOLS] : []),
     "--setting-sources",
     "",
     "--strict-mcp-config",

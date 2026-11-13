@@ -22,7 +22,7 @@
  * check" and the report carries on.
  */
 import type { Listing } from "./landSearch.ts";
-import { lookupZoning } from "./zoning.ts";
+import { mappedDistrict } from "./zoning.ts";
 
 /** "red" = a serious issue, "amber" = something to plan for, "green" = fine, "unknown" = couldn't check. */
 export type Flag = "red" | "amber" | "green" | "unknown";
@@ -214,8 +214,7 @@ async function edwards(lat: number, lon: number): Promise<SiteCheck> {
 
 async function utilities(listing: Listing): Promise<SiteCheck> {
   try {
-    const zoning = await lookupZoning(listing);
-    if (zoning.kind !== "unknown")
+    if (await mappedDistrict(listing))
       return {
         flag: "green",
         summary: "Inside the City of Austin: likely Austin Water and Austin Energy",

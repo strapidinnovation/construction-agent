@@ -13,12 +13,14 @@
  *     the key facts and post the full reports/files to Slack themselves.
  *
  * Two kinds of tools:
- *   - Quick tools (search, site checks, saved plans, comparisons, projects)
- *     take seconds and can be used freely.
+ *   - Quick tools (search, site checks, saved plans, comparisons, projects,
+ *     conversation status) take seconds and can be used freely.
  *   - Slow tools (design, estimate, timeline, feasibility) take minutes and go
  *     through the job queue. The agent may only run them after the user
  *     approved a plan that includes them (propose_plan); code enforces that
- *     with a budget per kind of job, whatever the model decides.
+ *     with a budget per kind of job, whatever the model decides. The one
+ *     exception: a single slow job may run without a plan, for requests that
+ *     ask for exactly that job.
  *
  * Two control tools let the agent talk to the user mid-mission:
  * propose_plan (approval) and ask_user (a question). Both pause the mission
@@ -30,12 +32,13 @@ import { z } from "zod";
 import type { Feasibility } from "../../agents/feasibility.ts";
 import type { Listing } from "../../agents/landSearch.ts";
 import { runSiteChecks, type Flag, type SiteChecks } from "../../agents/siteChecks.ts";
-import { STRATEGY_LABEL, type SiteStrategy } from "../../agents/sitePlanner.ts";
+import { HOUSING_TYPE_LABEL, STRATEGY_LABEL, type SiteStrategy } from "../../agents/sitePlanner.ts";
+import { researchSiteRules } from "../../agents/siteRules.ts";
 import { usd } from "../../listingFormat.ts";
 import { bestMatch } from "../match.ts";
 import { findPlanByName, listingOfPlan, savedPlans, streetOf } from "../plans.ts";
-import type { JobKind } from "../queue.ts";
-import { getSession, updateSession } from "../sessions.ts";
+import { allJobs, type JobKind } from "../queue.ts";
+import { getSession, threadSummary, updateSession } from "../sessions.ts";
 import { searchLand } from "../skills/search.ts";
 import {
   findProject,
@@ -49,8 +52,10 @@ import {
   queueDesign,
   queueEstimate,
   queueFeasibility,
+  queueInterior,
   queueTimeline,
   type Ctx,
+  type QueueOpts,
   type Started,
 } from "../superagent.ts";
 import {
@@ -60,7 +65,7 @@ import {
   type ComparisonRow,
   type PlanLine,
 } from "./missionUi.ts";
-import { saveMission, type JobCounts, type Mission } from "./missions.ts";
+import { activeMissions, saveMission, type JobCounts, type Mission } from "./missions.ts";
 
 /** At most this many house designs in one approved plan (each takes ~7 minutes). */
 const MAX_DESIGNS_PER_PLAN = 3;
@@ -68,7 +73,13 @@ const MAX_DESIGNS_PER_PLAN = 3;
 const MAX_SLOW_STEPS_PER_PLAN = 9;
 
 /** Rough minutes per slow job, shown in the plan so people know what they approve. */
-const MINUTES: Record<JobKind, number> = { design: 7, estimate: 12, timeline: 6, feasibility: 6 };
+const MINUTES: Record<JobKind, number> = {
+  design: 7,
+  estimate: 12,
+  timeline: 6,
+  feasibility: 6,
+  interior: 4,
+};
 
 /** What a tool gets to work with: the conversation (to post into) and the mission. */
 export type ToolEnv = { ctx: Ctx; mission: Mission };
@@ -182,13 +193,25 @@ function findListing(env: ToolEnv, name: string): { listing: Listing } | { error
 // Slow jobs: the approval budget and waiting for the queued job.
 // ---------------------------------------------------------------------------
 
-/** Why this slow job can't run now, or null if the approved plan allows it. */
+/**
+ * Why this slow job can't run now, or null if it may. An approved plan allows
+ * its steps. Before any plan, ONE slow job may run directly: a request for
+ * exactly one slow action ("design a house on Corral Ln") is its own approval.
+ */
 function budgetProblem(m: Mission, kind: JobKind): string | null {
   if (m.unattended)
     return "Slow tools can't run in a scheduled report. Answer with what the quick tools found.";
   if ((m.approved[kind] ?? 0) - (m.used[kind] ?? 0) > 0) return null;
+  if (!m.directStep && !Object.keys(m.approved).length) {
+    m.directStep = true;
+    m.approved[kind] = 1;
+    return null;
+  }
   return "This step isn't in an approved plan. Call propose_plan listing every slow step you want to run, and wait for the user's approval.";
 }
+
+/** How the agent queues jobs: the mission restarts them itself, and they don't change the selected lot. */
+const AGENT_JOB: QueueOpts = { persist: false, remember: false };
 
 /**
  * Run one slow job for the mission: check the budget, queue it (with its own
@@ -316,6 +339,81 @@ const checkSiteTool = defineTool({
     return {
       result: rows,
       done: `Checked site risks for ${rows.length} ${rows.length === 1 ? "property" : "properties"}${flagged ? ` (${flagged} with a red flag)` : ""}`,
+    };
+  },
+});
+
+/** A bare listing for an address the user typed: "12 Oak St, Springfield, IL 62701". */
+function typedListing(address: string): Listing | null {
+  const parts = address.split(",").map((p) => p.trim());
+  const tail = parts.at(-1)?.match(/^([A-Za-z]{2})(?:\s+(\d{5}))?$/);
+  if (parts.length < 3 || !tail) return null;
+  return {
+    address,
+    city: parts.at(-2) ?? null,
+    state: tail[1].toUpperCase(),
+    zipCode: tail[2] ?? null,
+    county: null,
+    latitude: null,
+    longitude: null,
+    priceUsd: 0,
+    lotSqft: null,
+    acres: null,
+    url: `address:${address.toLowerCase()}`,
+  };
+}
+
+const siteRulesTool = defineTool({
+  name: "research_site_rules",
+  description:
+    "Research what can legally be built on a property (1-8 min the first time, then cached): zoning district, setbacks, coverage, height, floor area ratio, parking, which housing types are allowed (single-family, ADU, duplex, townhouse, subdivision, multifamily...), overlays, state housing laws and permits, with official sources. Works anywhere in the US.",
+  params: z.object({
+    property: z
+      .string()
+      .describe(
+        'Street address of a known property, or a full address "12 Oak St, Springfield, IL 62701"',
+      ),
+  }),
+  label: (a) => `Researching what can be built on ${a.property}`,
+  async run(a, env) {
+    const found = findListing(env, a.property);
+    const listing = "listing" in found ? found.listing : typedListing(a.property);
+    if (!listing)
+      return fail(
+        `${"error" in found ? found.error : ""} Or give the full address: street, city, 2-letter state.`.trim(),
+      );
+    const result = await researchSiteRules(listing);
+    if (result.kind === "failed") return fail(`Site rules research failed: ${result.reason}`);
+    const r = result.rules;
+    const res = r.research;
+    return {
+      result: {
+        property: street(listing),
+        jurisdiction: r.jurisdiction,
+        district: `${r.district} (${r.districtName})`,
+        setbacksFt: { front: r.frontFt, side: r.interiorSideFt, rear: r.rearFt },
+        maxHeightFt: r.maxHeightFt,
+        maxStories: r.maxStories ?? null,
+        maxBuildingCoveragePct:
+          r.maxBuildingCoverage === null ? null : Math.round(r.maxBuildingCoverage * 100),
+        maxFar: r.maxFar ?? null,
+        minLotSqft: r.minLotSqft,
+        maxUnitsPerLot: r.maxUnits,
+        parkingPerUnit: r.parkingPerUnit ?? null,
+        housingTypes: Object.fromEntries(
+          (res?.housingTypes ?? []).map((t) => [
+            t.type,
+            `${t.allowed}${t.maxUnits ? ` (max ${t.maxUnits})` : ""}${t.conditions ? `: ${t.conditions}` : ""}`,
+          ]),
+        ),
+        overlays: res?.overlays.map((o) => `${o.name}: ${o.effect}`) ?? [],
+        stateLaws: res?.stateLaws ?? [],
+        warnings: res?.warnings ?? [],
+        assumedDefaults: res?.assumed ?? [],
+        confidence: res?.confidence ?? "low",
+        sources: res?.citations.length ?? 0,
+      },
+      done: `Researched site rules for ${street(listing)}: ${r.district}, ${res?.confidence ?? "low"} confidence${result.cached ? " (cached)" : ""}`,
     };
   },
 });
@@ -489,6 +587,39 @@ const comparePlansTool = defineTool({
   },
 });
 
+const conversationStatusTool = defineTool({
+  name: "conversation_status",
+  description:
+    "What has happened in this Slack conversation and what is running right now: the last land search and listings shown, the selected lot and latest plan, slow jobs waiting or running, and other tasks you are working on here.",
+  params: z.object({}),
+  label: () => "Checking this conversation",
+  async run(_a, { ctx, mission }) {
+    const session = getSession(ctx.key);
+    const jobs = allJobs()
+      .filter((j) => j.key === ctx.key)
+      .map((j) => `${j.kind} ${j.subject} (${j.running ? "running" : "waiting in line"})`);
+    const tasks = activeMissions(ctx.key)
+      .filter((m) => m.id !== mission.id)
+      .map((m) => ({
+        goal: m.goal,
+        state: m.state,
+        lastStep: m.steps.at(-1)?.text ?? null,
+      }));
+    return {
+      result: {
+        memory: threadSummary(session),
+        jobs,
+        otherTasks: tasks,
+        earlierRequests: (session.history ?? []).map((h) => ({
+          request: h.request,
+          steps: h.steps ?? [],
+          at: h.at,
+        })),
+      },
+    };
+  },
+});
+
 const listProjectsTool = defineTool({
   name: "list_projects",
   description:
@@ -593,11 +724,12 @@ const designTool = defineTool({
     return runSlow(
       env,
       "design",
-      (ctx) => queueDesign(ctx, { listing }, a.lot ?? "", { persist: false }),
+      (ctx) => queueDesign(ctx, { listing }, a.lot ?? "", AGENT_JOB),
       (r) => ({
         result: {
           property: street(listing),
           plan: STRATEGY_LABEL[r.strategy.strategy],
+          housingType: r.strategy.housingType ? HOUSING_TYPE_LABEL[r.strategy.housingType] : null,
           homes: r.strategy.homes,
           houseTypes: r.strategy.houseTypes.map((t) => ({
             name: t.name,
@@ -608,7 +740,9 @@ const designTool = defineTool({
             stories: t.stories,
           })),
           lot: `${r.lot.widthFt} x ${r.lot.depthFt} ft (${r.lotNote})`,
-          zoning: r.zoningFound ? r.rules.district : `typical defaults (${r.zoningNote})`,
+          zoning: r.zoningFound
+            ? `${r.rules.district}, ${r.rules.jurisdiction} (${r.rules.research?.confidence ?? "low"} confidence)`
+            : `typical defaults (${r.zoningNote})`,
           drawingComplete: r.complete,
         },
         done: `Designed ${street(listing)}: ${r.strategy.homes} ${r.strategy.homes === 1 ? "home" : "homes"}`,
@@ -632,7 +766,7 @@ const estimateTool = defineTool({
     return runSlow(
       env,
       "estimate",
-      (ctx) => queueEstimate(ctx, { name: a.property }, { persist: false }),
+      (ctx) => queueEstimate(ctx, { name: a.property }, AGENT_JOB),
       (r) => {
         const e = r.estimate;
         const name = planStreet(e.planDir, a.property);
@@ -668,7 +802,7 @@ const timelineTool = defineTool({
     return runSlow(
       env,
       "timeline",
-      (ctx) => queueTimeline(ctx, a.startDate ?? "", { name: a.property }, { persist: false }),
+      (ctx) => queueTimeline(ctx, a.startDate ?? "", { name: a.property }, AGENT_JOB),
       (r) => {
         const t = r.timeline;
         const name = planStreet(t.planDir, a.property);
@@ -700,7 +834,7 @@ const feasibilityTool = defineTool({
     return runSlow(
       env,
       "feasibility",
-      (ctx) => queueFeasibility(ctx, { name: a.property }, { persist: false }),
+      (ctx) => queueFeasibility(ctx, { name: a.property }, AGENT_JOB),
       (r) => {
         const f = r.feasibility;
         const name = streetOf(f.listing.address);
@@ -736,6 +870,29 @@ const feasibilityTool = defineTool({
   },
 });
 
+const interiorTool = defineTool({
+  name: "design_interior",
+  slow: "interior",
+  description:
+    "SLOW (~4 min, needs an approved plan). Furnished 3D top view of every floor of a property's house plan, in a style picked for the house and its price (a PDF of the pictures is shown to the user). The property must have a plan (design_house).",
+  params: z.object({ property: z.string().describe("Street address of a property with a plan") }),
+  label: (a) => `Designing the 3D interior for ${a.property}`,
+  async run(a, env) {
+    return runSlow(
+      env,
+      "interior",
+      (ctx) => queueInterior(ctx, { name: a.property }, AGENT_JOB),
+      (r) => {
+        const name = planStreet(r.planDir, a.property);
+        return {
+          result: { property: name, floors: r.floors, style: r.style.name, why: r.style.reasoning },
+          done: `Designed the 3D interior for ${name}: ${r.style.name}`,
+        };
+      },
+    );
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Control tools: pause the mission until the user answers.
 // ---------------------------------------------------------------------------
@@ -752,6 +909,7 @@ const PLAN_STEP_TOOLS = [
   "estimate_cost",
   "plan_timeline",
   "feasibility_report",
+  "design_interior",
 ] as const;
 
 const SLOW_KIND: Partial<Record<(typeof PLAN_STEP_TOOLS)[number], JobKind>> = {
@@ -759,6 +917,7 @@ const SLOW_KIND: Partial<Record<(typeof PLAN_STEP_TOOLS)[number], JobKind>> = {
   estimate_cost: "estimate",
   plan_timeline: "timeline",
   feasibility_report: "feasibility",
+  design_interior: "interior",
 };
 
 const STEP_VERB: Record<(typeof PLAN_STEP_TOOLS)[number], string> = {
@@ -772,6 +931,7 @@ const STEP_VERB: Record<(typeof PLAN_STEP_TOOLS)[number], string> = {
   estimate_cost: "Estimate the cost for",
   plan_timeline: "Plan the timeline for",
   feasibility_report: "Feasibility report for",
+  design_interior: "Design the 3D interior for",
 };
 
 const proposePlanTool = defineTool({
@@ -826,10 +986,11 @@ const proposePlanTool = defineTool({
     });
     const minutes = lines.reduce((n, l) => n + (l.minutes ?? 0), 0) || 1;
 
+    // Posted before the mission waits, so a failed post can't leave it waiting on nothing.
+    await ctx.out.reply(planReply(mission, a.summary, lines, minutes));
     mission.state = "waiting-approval";
     mission.pendingPlan = { counts, minutes };
     await saveMission(mission);
-    await ctx.out.reply(planReply(mission, a.summary, lines, minutes));
     return {
       result:
         "The plan is shown to the user. Stop now; their answer will come as the next message.",
@@ -851,10 +1012,10 @@ const askUserTool = defineTool({
   label: (a) => `Asked: ${a.question}`,
   async run(a, { ctx, mission }) {
     const options = a.options ?? [];
+    await ctx.out.reply(questionReply(mission, a.question, options));
     mission.state = "waiting-answer";
     mission.pendingQuestion = { question: a.question, options };
     await saveMission(mission);
-    await ctx.out.reply(questionReply(mission, a.question, options));
     return {
       result:
         "The question is shown to the user. Stop now; their answer will come as the next message.",
@@ -867,14 +1028,17 @@ const askUserTool = defineTool({
 export const TOOLS: AgentTool[] = [
   searchLandTool,
   checkSiteTool,
+  siteRulesTool,
   listSavedPlansTool,
   comparePlansTool,
+  conversationStatusTool,
   listProjectsTool,
   projectDetailsTool,
   designTool,
   estimateTool,
   timelineTool,
   feasibilityTool,
+  interiorTool,
   proposePlanTool,
   askUserTool,
 ];

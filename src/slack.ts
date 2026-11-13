@@ -1,5 +1,6 @@
 /**
- * Slack gateway for SuperAgent. Start it with `npm run dev`.
+ * Slack gateway for SuperAgent. src/main.ts loads it when the Slack tokens
+ * are set (`npm run dev`).
  *
  * This file is the only place that talks to Slack. It:
  *   - connects to Slack using Socket Mode,
@@ -24,35 +25,20 @@
  *   - Bot scopes: app_mentions:read, chat:write, reactions:write, files:write.
  *   - Event subscription: app_mention.
  *   - Interactivity: ON (needed for the "Design on this lot", "Estimate cost",
- *     "Plan the timeline", "Feasibility report", "Cancel", "Details" and "Why is it late?" buttons).
+ *     "Plan the timeline", "Feasibility report", "Cancel", "Go" and answer buttons).
  *
- * On startup it also checks that Ollama and the models are available, and
- * restarts any jobs that were interrupted when the bot last stopped.
+ * It exports ctxFor, which src/main.ts uses to resume interrupted work and to
+ * run the daily digest in Slack conversations.
  */
 import { basename } from "node:path";
 import { App, LogLevel, type BlockButtonAction } from "@slack/bolt";
-import {
-  BACKEND,
-  DESIGN_MODEL,
-  ESTIMATE_MODEL,
-  MODEL,
-  PLANNER_MODEL,
-  ROUTER_MODEL,
-} from "./llm.ts";
-import {
-  answerMission,
-  approveMission,
-  cancelMission,
-  resumeMissions,
-} from "./superagent/agent/agent.ts";
+import { answerMission, approveMission, cancelMission } from "./superagent/agent/agent.ts";
 import { getMission } from "./superagent/agent/missions.ts";
 import {
-  MISSION_ANSWER_BUTTON,
+  MISSION_ANSWER_ACTION,
   MISSION_CANCEL_BUTTON,
   MISSION_GO_BUTTON,
 } from "./superagent/agent/missionUi.ts";
-import { startScheduler } from "./superagent/agent/schedule.ts";
-import { checkModels } from "./superagent/health.ts";
 import { conversationKey, parseKey, type ReplyMode } from "./superagent/sessions.ts";
 import {
   CANCEL_BUTTON,
@@ -60,8 +46,7 @@ import {
   ESTIMATE_BUTTON,
   errorReply,
   FEASIBILITY_BUTTON,
-  PROJECT_BUTTON,
-  PROJECT_DELAY_BUTTON,
+  INTERIOR_BUTTON,
   statusBlocks,
   TIMELINE_BUTTON,
   type Reply,
@@ -69,11 +54,10 @@ import {
 import {
   cancelJob,
   handleMessage,
-  resumeJobs,
-  showProjectById,
   startDesign,
   startEstimate,
   startFeasibility,
+  startInterior,
   startTimeline,
   type Ctx,
   type Output,
@@ -212,7 +196,7 @@ app.event("app_mention", async ({ event, client, logger }) => {
   const { key, out } = ctx;
 
   // The message text contains the mention as "<@U123ABC>"; remove it so the
-  // router only sees what the person actually asked.
+  // agent only sees what the person actually asked.
   const text = event.text.replace(/<@[^>]+>/g, "").trim();
   console.log(`Mention in ${key} from ${ctx.user}: "${text}"`);
 
@@ -250,7 +234,7 @@ app.event("app_mention", async ({ event, client, logger }) => {
  * Buttons that need an exact listing or plan carry it in their value, so they
  * work even when the click comes from someone else's results.
  */
-function onButton(actionId: string, handle: (ctx: Ctx, value: string) => Promise<void>) {
+function onButton(actionId: string | RegExp, handle: (ctx: Ctx, value: string) => Promise<void>) {
   app.action<BlockButtonAction>(actionId, async ({ ack, body, action, logger }) => {
     await ack();
     const channel = body.channel?.id;
@@ -260,7 +244,7 @@ function onButton(actionId: string, handle: (ctx: Ctx, value: string) => Promise
     const threadTs: string = message.thread_ts ?? message.ts;
     const ctx = ctxFor(conversationKey(MODE, channel, threadTs, body.user.id), body.user.id);
     console.log(
-      `Button "${actionId}" in ${ctx.key} from ${ctx.user}${action.value ? ` (value ${action.value})` : ""}`,
+      `Button "${action.action_id}" in ${ctx.key} from ${ctx.user}${action.value ? ` (value ${action.value})` : ""}`,
     );
 
     try {
@@ -293,14 +277,11 @@ onButton(FEASIBILITY_BUTTON, (ctx, planDir) =>
   startFeasibility(ctx, { planDir: planDir || undefined }),
 );
 
+/** "3D interior" under a finished plan; the value is the plan folder. */
+onButton(INTERIOR_BUTTON, (ctx, planDir) => startInterior(ctx, { planDir: planDir || undefined }));
+
 /** "Cancel" on a job's status message; the value is that job's id. */
 onButton(CANCEL_BUTTON, (ctx, id) => cancelJob(ctx, id || undefined));
-
-/** "Details" next to a project in the projects list; the value is the project id. */
-onButton(PROJECT_BUTTON, (ctx, id) => showProjectById(ctx, id, "overview"));
-
-/** "Why is it late?" under a project's overview. */
-onButton(PROJECT_DELAY_BUTTON, (ctx, id) => showProjectById(ctx, id, "delay"));
 
 /**
  * The agent's mission buttons. A mission belongs to the conversation it was
@@ -319,7 +300,7 @@ onButton(MISSION_GO_BUTTON, (ctx, id) => approveMission(missionCtx(ctx, id), id)
 onButton(MISSION_CANCEL_BUTTON, (ctx, id) => cancelMission(missionCtx(ctx, id), id));
 
 /** An answer button under the agent's question; the value is "<mission id>|<option index>". */
-onButton(MISSION_ANSWER_BUTTON, async (ctx, value) => {
+onButton(MISSION_ANSWER_ACTION, async (ctx, value) => {
   const [id = "", index = ""] = value.split("|");
   const m = getMission(id);
   const answer = m?.pendingQuestion?.options[Number(index)];
@@ -329,30 +310,7 @@ onButton(MISSION_ANSWER_BUTTON, async (ctx, value) => {
 
 await app.start();
 console.log(
-  `SuperAgent is running (reply mode: ${MODE}). Tag it in a channel it has been invited to. Ctrl+C to stop.`,
+  `Slack is connected (reply mode: ${MODE}). Tag the bot in a channel it has been invited to.`,
 );
 
-// Startup check: warn in the terminal (not in Slack) if the model backend isn't
-// ready, so whoever started the bot can fix it before anyone asks.
-console.log(
-  `AI models (${BACKEND}): agent ${PLANNER_MODEL}, router ${ROUTER_MODEL}, design ${DESIGN_MODEL}, estimate ${ESTIMATE_MODEL}, other ${MODEL}.`,
-);
-const problem = await checkModels([
-  MODEL,
-  ROUTER_MODEL,
-  DESIGN_MODEL,
-  ESTIMATE_MODEL,
-  PLANNER_MODEL,
-]);
-if (problem) console.warn(`Warning: ${problem}`);
-
-// Pick up jobs and agent missions that were interrupted by the last restart.
-const resumed = await resumeJobs((key, user) => ctxFor(key, user));
-if (resumed) console.log(`Resumed ${resumed} interrupted ${resumed === 1 ? "job" : "jobs"}.`);
-const missions = await resumeMissions((key, user) => ctxFor(key, user));
-if (missions)
-  console.log(`Resumed ${missions} interrupted ${missions === 1 ? "mission" : "missions"}.`);
-
-// Proactive work (the daily project digest), if DIGEST_CHANNEL is set.
-const schedule = startScheduler((key, user) => ctxFor(key, user));
-if (schedule) console.log(`Scheduled: ${schedule}.`);
+export { ctxFor };

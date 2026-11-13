@@ -7,4 +7,6 @@ output
 outputs
 data/slack-sessions.json*
 data/missions/
+data/conversations/
 data/digest.json
+data/site-rules/

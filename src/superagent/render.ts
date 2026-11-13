@@ -66,6 +66,31 @@ export async function printPdf(
 }
 
 /**
+ * Take a picture of a three.js page (the interior designer's 3D views).
+ * Chrome draws WebGL in software (SwiftShader), so no graphics card is
+ * needed; local files may load each other so the page can import three.js
+ * from node_modules. The virtual time budget lets the page finish drawing
+ * before the picture is taken.
+ */
+export async function screenshotWebGl(
+  htmlPath: string,
+  pngPath: string,
+  { width, height, scale }: { width: number; height: number; scale: number },
+): Promise<void> {
+  await chrome([
+    "--allow-file-access-from-files",
+    "--enable-unsafe-swiftshader",
+    "--use-angle=swiftshader",
+    `--window-size=${width},${height}`,
+    `--force-device-scale-factor=${scale}`,
+    "--default-background-color=ffffffff",
+    "--virtual-time-budget=20000",
+    `--screenshot=${pngPath}`,
+    pathToFileURL(htmlPath).href,
+  ]);
+}
+
+/**
  * Take a picture of the SVG drawing. The house designer draws on a
  * 1600 x 1100 canvas, so the browser window is set to exactly that size.
  */

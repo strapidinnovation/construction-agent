@@ -29,8 +29,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLANNER_MODEL } from "../../llm.ts";
 import { cancel } from "../queue.ts";
-import { threadSummary } from "../router.ts";
-import { getSession, recentAnswer, updateSession } from "../sessions.ts";
+import { getSession, recentHistory, threadSummary, updateSession } from "../sessions.ts";
 import { errorReply } from "../slackUi.ts";
 import type { Ctx } from "../superagent.ts";
 import {
@@ -41,10 +40,9 @@ import {
   missionResumeReply,
   missionStatusText,
   notYourMissionReply,
-  questionReply,
 } from "./missionUi.ts";
 import {
-  activeMission,
+  activeMissions,
   allMissions,
   createMission,
   getMission,
@@ -55,6 +53,12 @@ import { toolsFor, type AgentTool, type ToolOutcome } from "./tools.ts";
 
 /** How many model turns one mission may use before it must answer. */
 const MAX_MODEL_CALLS = 25;
+
+/**
+ * Missions one conversation may have going at once. Every message starts one,
+ * so a quick question shouldn't have to wait for an hour-long goal.
+ */
+const MAX_MISSIONS_PER_CONVERSATION = 3;
 
 /**
  * Let the planner think before each decision. On by default: it makes the
@@ -69,38 +73,56 @@ const SERVER = "superagent";
 const WORKDIR = join(tmpdir(), "superagent-agent");
 
 const SYSTEM = `You are SuperAgent, an autonomous assistant for a home builder, working in Slack.
-You reach the user's goal on your own by calling tools, one step at a time, until you can give a complete answer.
+Every message people send you comes to you: quick questions, follow-ups, single requests and multi-step goals.
+You reach the goal on your own by calling tools, one step at a time, until you can give a complete answer.
 Your tools are named mcp__superagent__<name>; below they are called by <name>.
+What you can do: find land for sale (any US city), check site risks (flood, soil, aquifer, utilities), research what
+can legally be built on a lot (zoning, allowed housing types, setbacks, state laws), design houses
+on a lot, furnish them in 3D (a top view of every floor), estimate build costs, plan construction timelines, assess
+feasibility (profit if sold, yield if rented), compare plans, and report on the company's ongoing construction projects.
 
 How to work:
-1. Work out what the goal needs, then gather facts with the QUICK tools: search_land, check_site, list_saved_plans,
-   compare_plans, list_projects, project_details. They take seconds; use them as needed.
-2. SLOW tools take minutes and need the user's approval: design_house (~7 min), estimate_cost (~12 min),
-   plan_timeline (~6 min), feasibility_report (~6 min, or ~18 if it has to estimate the cost first).
-   Before running any of them, call propose_plan ONCE listing every step you intend to take, then wait for the answer.
-   After approval, run exactly the approved slow steps.
+1. Work out what the message needs. Gather facts with the QUICK tools: search_land, check_site, list_saved_plans,
+   compare_plans, conversation_status, list_projects, project_details. They take seconds; use them as needed.
+   research_site_rules needs no approval but takes 1-8 minutes per new property (cached after), so call it only
+   for the lots the user asks about, not every search result. design_house already researches the rules itself.
+   Some messages need no tool at all: a greeting, or a question your earlier answer already covers.
+2. SLOW tools take minutes: design_house (~7 min), estimate_cost (~12 min), plan_timeline (~6 min),
+   feasibility_report (~6 min, or ~18 if it has to estimate the cost first), design_interior (~4 min).
+   - If the user asked for exactly ONE slow action on one property they named ("design a house on 8446 Corral Ln",
+     "estimate 3218 Brass Buttons Trl", "timeline for River Bnd starting Jan 4"), run it directly.
+   - Anything more (several slow steps, or slow steps the user didn't ask for by name): call propose_plan ONCE
+     listing every step you intend to take, then wait for the answer. After approval, run exactly the approved steps.
 3. Narrow down before slow work: e.g. search, check_site on the candidates, then design only the best 1 to 3 lots.
 4. feasibility_report needs a design (design_house) and makes the cost estimate itself when there is none,
    so don't add estimate_cost before it unless the user asked for an estimate.
+5. "Best", "top" or "ideal" without a measure means the most profitable for a builder: that needs feasibility_report
+   on each candidate, then compare_plans. If you judge on something else (land price, site risk), say so in the answer.
 
 Recipes (adapt them to the goal):
 - "Is it worth building / assess / profit / sell or rent / best lot to build on": design_house, then feasibility_report
   for each candidate lot, then compare_plans when there is more than one. All of these slow steps go in ONE plan.
 - "Find land that doesn't flood / has good soil": search_land, then check_site on the listings.
+- "Show me the inside / interior / furnish it / 3D view": design_interior on a property that has a plan
+  (design_house first if it has none, both in one plan).
+- "What can I build on X / zoning / can I put a duplex or ADU there": research_site_rules (a full typed address works
+  even if it isn't a known listing). Mention the confidence and any warnings in the answer.
 - "Compare plans we already have": compare_plans (list_saved_plans first if you don't know the names).
 - "Which projects need attention / why are they late": list_projects, then project_details on each relevant one.
-5. To compare properties that have plans, use compare_plans: it shows a ranked table to the user and gives you the ranking.
-6. Name properties by street address exactly as the tools return them (e.g. "3218 Brass Buttons Trl").
-7. If a tool returns an error, read it and fix your input or try another way. Never repeat the same call.
-8. When you need information from the user (e.g. no city or budget for a land search), call ask_user.
-   Never ask questions in a plain reply: a reply without a tool call ENDS the mission.
-9. When the goal is met, reply WITHOUT a tool call. That reply is your final answer:
-   start with the answer or recommendation in one sentence, then up to 5 short bullet points with the reasons.
-   Use only facts and numbers from tool results; never make up numbers. Under 150 words.
+- "What have we done / what are you working on / is it still running": conversation_status.
+6. To compare properties that have plans, use compare_plans: it shows a ranked table to the user and gives you the ranking.
+7. Name properties by street address exactly as the tools return them (e.g. "3218 Brass Buttons Trl").
+8. If a tool returns an error, read it and fix your input or try another way. Never repeat the same call.
+9. When you need the user's input to continue the work (e.g. no city or budget for a land search), call ask_user.
+10. When you are done, reply WITHOUT a tool call. That reply is your final answer:
+   start with the answer or recommendation in one sentence, then up to 5 short bullet points with the reasons
+   (a simple question gets a short answer, without bullets if they add nothing).
+   Use only facts and numbers from tool results or your earlier answers; never make up numbers. Under 150 words.
    Slack formatting: *bold* and • bullets, no headings or tables (the user already saw the tables tools posted).
-10. A follow-up ("why should I worry about them?", "how long would each take?") is about your earlier answer,
-   given before the new request. Answer straight from it only when it already contains what is asked;
-   otherwise call tools for the things it names (e.g. project_details on each project it listed).`;
+11. A follow-up ("why should I worry about them?", "how did you pick that one?", "how long would each take?") is
+   about your earlier answers, given before the new request with the steps you took. Answer straight from them only
+   when they already contain what is asked, and be honest about what they were based on; otherwise call tools for
+   the things they name.`;
 
 /**
  * The system prompt, fixed for the whole mission: the SDK records it with the
@@ -123,7 +145,7 @@ function systemPrompt(m: Mission): string {
 
 /** "2 design, 2 feasibility": the approved slow steps not used yet. */
 function stepsLeft(m: Mission): string {
-  const left = (["design", "estimate", "timeline", "feasibility"] as const)
+  const left = (["design", "estimate", "timeline", "feasibility", "interior"] as const)
     .map((k) => [k, (m.approved[k] ?? 0) - (m.used[k] ?? 0)] as const)
     .filter(([, n]) => n > 0)
     .map(([k, n]) => `${n} ${k}`);
@@ -281,6 +303,10 @@ async function turn(
     if (msg.type !== "result") continue;
     m.modelCalls += msg.num_turns;
     await saveMission(m);
+    // An API or login error ("Not logged in", usage limit) also comes back as
+    // "success", with the error as its text.
+    if (msg.subtype === "success" && msg.is_error)
+      throw new Error(`Claude couldn't answer: ${msg.result.trim()}`);
     if (msg.subtype === "success") return { text: msg.result.trim(), outOfTurns: false };
     if (msg.subtype === "error_max_turns") return { text: "", outOfTurns: true };
     throw new Error(`The agent stopped: ${msg.errors?.join("; ") || msg.subtype}`);
@@ -318,18 +344,8 @@ async function work(ctx: Ctx, id: string, firstPrompt: string): Promise<void> {
       );
     }
 
-    // A goal always needs tools, so a plain reply before any tool was used is
-    // really a clarifying question: ask it and wait, instead of ending the
-    // mission. A follow-up can be answered from the earlier result, so there
-    // only a reply that actually asks something is treated that way.
-    const asking = !m.followsUp || text.includes("?");
-    if (text && !m.steps.length && !m.unattended && asking) {
-      m.state = "waiting-answer";
-      m.pendingQuestion = { question: text, options: [] };
-      await saveMission(m);
-      await ctx.out.reply(questionReply(m, text, []));
-      return;
-    }
+    // A plain reply ends the mission, even a question: the user's answer then
+    // starts a new one that gets this reply as the earlier answer.
     if (text) return finish(ctx, m, text);
     // An empty reply: nudge once more.
     if (nudges >= 1) return finish(ctx, m, "");
@@ -343,7 +359,12 @@ async function finish(ctx: Ctx, m: Mission, answer: string): Promise<void> {
   await saveMission(m);
   if (!m.unattended)
     await updateSession(m.key, {
-      lastAnswer: { request: m.goal, summary: answer, at: new Date().toISOString() },
+      lastAnswer: {
+        request: m.goal,
+        summary: answer,
+        steps: m.steps.map((s) => s.text),
+        at: new Date().toISOString(),
+      },
     });
   await ctx.out.status(missionStatusText(m, ":white_check_mark: Done."));
   await ctx.out.reply(missionDoneReply(m, answer));
@@ -365,8 +386,8 @@ async function fail(ctx: Ctx, id: string, err: unknown): Promise<void> {
 
 /**
  * Start working on a goal. Returns the mission id once it is under way (the
- * work continues in the background), or undefined if this conversation is
- * still busy with another mission.
+ * work continues in the background), or undefined if this conversation
+ * already has MAX_MISSIONS_PER_CONVERSATION unfinished missions.
  * `unattended`: started by the scheduler, so only quick tools (nobody to ask).
  */
 export async function startMission(
@@ -374,14 +395,14 @@ export async function startMission(
   goal: string,
   opts: { unattended?: boolean } = {},
 ): Promise<string | undefined> {
-  const busy = activeMission(ctx.key);
-  if (busy) {
-    await ctx.out.reply(missionBusyReply(busy));
+  const active = activeMissions(ctx.key);
+  if (active.length >= MAX_MISSIONS_PER_CONVERSATION) {
+    await ctx.out.reply(missionBusyReply(active));
     return undefined;
   }
-  // A goal soon after another answer may build on it ("yes, run those", "why
-  // should I worry about them?"), so the model gets the earlier request and answer.
-  const previous = opts.unattended ? undefined : recentAnswer(getSession(ctx.key));
+  // A message may build on earlier answers ("yes, run those", "why should I
+  // worry about them?"), so the model gets the recent requests, steps and answers.
+  const previous = opts.unattended ? undefined : recentHistory(getSession(ctx.key));
   const m = await createMission(ctx.key, ctx.user, goal, {
     unattended: opts.unattended,
     previous,
@@ -459,9 +480,13 @@ export async function cancelMission(ctx: Ctx, id: string): Promise<void> {
  * carry on from their saved session. A slow job that was interrupted doesn't
  * count against the approval, so the agent can run it again. Missions waiting
  * for the user stay paused; their buttons and replies still work.
+ * Missions in conversations `keep` rejects are left alone (see resumeJobs).
  */
-export async function resumeMissions(makeCtx: (key: string, user: string) => Ctx): Promise<number> {
-  const running = allMissions().filter((m) => m.state === "running");
+export async function resumeMissions(
+  makeCtx: (key: string, user: string) => Ctx,
+  keep: (key: string) => boolean = () => true,
+): Promise<number> {
+  const running = allMissions().filter((m) => m.state === "running" && keep(m.key));
   for (const m of running) {
     let interrupted = "";
     if (m.inflight) {

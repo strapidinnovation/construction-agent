@@ -11,14 +11,12 @@
  *     (on track / at risk / delayed / on hold / completed), and the ranked list
  *     of what caused the delay. Numbers never come from the AI model, so they
  *     always match the data.
- *   - QWEN only writes the plain-English parts: a short "what's happening"
- *     summary and the "why is it late" explanation, from the facts code hands
- *     it. It is told to use nothing else.
+ *   - The agent reads those facts (list_projects, project_details) and writes
+ *     the answer.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { chatJson } from "../../llm.ts";
 import { PROJECT_ROOT } from "../../paths.ts";
 import { bestMatch } from "../match.ts";
 
@@ -326,20 +324,6 @@ export function findProject(query: string): FindResult {
   return { kind: "not-found", names: all.map((p) => p.data.name) };
 }
 
-// ---------------------------------------------------------------------------
-// The plain-English parts, written by Qwen from code-computed facts.
-// ---------------------------------------------------------------------------
-
-/** "Apr 9, 2027" */
-export function niceDate(iso: string): string {
-  return new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
-
 const STATUS_TEXT: Record<ProjectStatus, string> = {
   "on-track": "on track",
   "at-risk": "at risk of delay",
@@ -348,79 +332,3 @@ const STATUS_TEXT: Record<ProjectStatus, string> = {
   completed: "completed",
 };
 export const statusText = (s: ProjectStatus) => STATUS_TEXT[s];
-
-/** All the facts about one project, written out for the model. */
-function factSheet(p: Project): string {
-  const d = p.data;
-  const issue = (i: Issue) =>
-    `- ${i.title} [${i.category}, ${i.status}, ${i.impactDays} days of delay, during ${stageLabel(i.stage)}]: ${i.description}` +
-    (i.status === "open" && i.nextStep ? ` Next step: ${i.nextStep}` : "") +
-    (i.status === "open" && i.expectedResolution
-      ? ` Expected to be resolved ${niceDate(i.expectedResolution)}.`
-      : "");
-  return [
-    `Today: ${niceDate(today())}`,
-    `Project: ${d.name} at ${d.site.address} for ${d.client}. ${d.scope.description}.`,
-    `Team: builder ${d.team.builder}, project manager ${d.team.projectManager}, superintendent ${d.team.superintendent}.`,
-    `Status: ${statusText(p.status)}. Planned finish ${niceDate(d.dates.plannedFinish)}, ` +
-      (d.dates.actualFinish
-        ? `actually finished ${niceDate(d.dates.actualFinish)}`
-        : `forecast finish ${niceDate(d.dates.forecastFinish)}`) +
-      ` (${p.daysLate > 0 ? `${p.daysLate} days late` : p.daysLate < 0 ? `${-p.daysLate} days early` : "on time"}).`,
-    // Spelled out so the model quotes the real figure instead of estimating it.
-    ...(p.daysLate > 0
-      ? [
-          `Total delay: ${p.daysLate} days (about ${Math.round(p.daysLate / 7)} weeks), caused by all the delaying issues together, not by one alone.`,
-        ]
-      : []),
-    ...(d.onHold ? [`On hold since ${niceDate(d.onHold.since)}: ${d.onHold.reason}`] : []),
-    `Progress: ${p.percentComplete}% overall, ${p.doneStages} of ${d.stages.length} stages done.`,
-    ...p.current.map(
-      (s) =>
-        `Current stage: ${stageLabel(s.stage)}, ${s.percent}% done, planned to end ${niceDate(s.plannedEnd)}` +
-        (s.forecastEnd ? `, now expected ${niceDate(s.forecastEnd)}` : "") +
-        ".",
-    ),
-    `Budget: $${d.budget.spentUsd.toLocaleString("en-US")} spent of $${d.budget.contractUsd.toLocaleString("en-US")}` +
-      (d.budget.approvedChangeOrdersUsd
-        ? ` plus $${d.budget.approvedChangeOrdersUsd.toLocaleString("en-US")} in approved change orders`
-        : "") +
-      ".",
-    ...(p.nextInspection
-      ? [`Next inspection: ${p.nextInspection.name} on ${niceDate(p.nextInspection.date)}.`]
-      : []),
-    `Issues:\n${d.issues.length ? d.issues.map(issue).join("\n") : "- none"}`,
-    `Recent site log:\n${
-      [...d.updates]
-        .sort((a, b) => b.date.localeCompare(a.date))
-        .slice(0, 4)
-        .map((u) => `- ${niceDate(u.date)} (${u.author}): ${u.note}`)
-        .join("\n") || "- none"
-    }`,
-  ].join("\n");
-}
-
-const WRITER = `You are a construction project manager briefing a colleague on Slack.
-Use ONLY the facts given. Never invent dates, numbers, names, causes or plans.
-When you say how late a project is, use the exact "Total delay" figure.
-Write plain, friendly sentences. Use dates like "Nov 23". No headings, no bullet points, no markdown.`;
-
-/** A short "what's happening" summary of one project. */
-export async function summarizeProject(p: Project): Promise<string> {
-  const raw = await chatJson(
-    WRITER,
-    `${factSheet(p)}\n\nIn 3 to 5 sentences: what stage the project is at and what is happening on site now, anything that is holding it up, and what happens next.`,
-    z.toJSONSchema(z.object({ summary: z.string() })),
-  );
-  return (JSON.parse(raw) as { summary: string }).summary;
-}
-
-/** A short explanation of what is causing the delay, biggest cause first. */
-export async function explainDelay(p: Project): Promise<string> {
-  const raw = await chatJson(
-    WRITER,
-    `${factSheet(p)}\n\nIn 2 to 4 sentences, explain why this project is ${p.daysLate} days behind its planned finish: name the causes from the biggest to the smallest with their days, say which are still open and what is being done about them. Delays can overlap, so describe days as "added" or "cost", not as a total.`,
-    z.toJSONSchema(z.object({ explanation: z.string() })),
-  );
-  return (JSON.parse(raw) as { explanation: string }).explanation;
-}

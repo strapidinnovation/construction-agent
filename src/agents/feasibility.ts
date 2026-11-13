@@ -522,6 +522,11 @@ function buildRisksAndSteps(
     steps.push(
       "Confirm the zoning and setbacks with the city or county; this plan used typical defaults.",
     );
+  else if (f.rules.research && f.rules.research.confidence !== "high")
+    steps.push(
+      `Confirm the zoning, setbacks and allowed housing types with ${f.rules.jurisdiction}; the site rules research had ${f.rules.research.confidence} confidence.`,
+    );
+  for (const w of f.rules.research?.warnings.slice(0, 2) ?? []) risks.push(w);
   steps.push("Check the value with a local agent or appraiser before committing.");
   return { risks, nextSteps: steps };
 }
@@ -711,7 +716,7 @@ function compsTable(title: string, set: CompSet, perMonth: boolean): string {
   return (
     `<h3>${esc(title)}</h3>` +
     `<p class="note">${set.comps.length} homes within ${set.radiusMiles} miles · median ${perMonth ? `$${set.medianPerSqft.toFixed(2)}/sq ft per month` : `${money(set.medianPerSqft)}/sq ft`}${set.lowConfidence ? " · few comps, lower confidence" : ""}${set.comps.length > 15 ? " · showing 15 newest" : ""}</p>` +
-    `<div class="table-scroll"><table><tr><th>Address</th><th class="num">${perMonth ? "Rent" : "Price"}</th><th class="num">Sq ft</th><th class="num">Per sq ft</th><th class="num">Built</th><th>Price type</th></tr>${rows}</table></div>`
+    `<div class="table-scroll"><table><thead><tr><th>Address</th><th class="num">${perMonth ? "Rent" : "Price"}</th><th class="num">Sq ft</th><th class="num">Per sq ft</th><th class="num">Built</th><th>Price type</th></tr></thead>${rows}</table></div>`
   );
 }
 
@@ -891,7 +896,7 @@ function toHtml(f: Feasibility): string {
     ) +
     section(
       "Costs",
-      `<div class="table-scroll"><table><tr><th>Item</th><th class="num">Amount</th><th>How it's worked out</th></tr>${costs}</table></div>`,
+      `<div class="table-scroll"><table><thead><tr><th>Item</th><th class="num">Amount</th><th>How it's worked out</th></tr></thead>${costs}</table></div>`,
     ) +
     section(
       `Build and sell: ${VERDICT_TEXT[s.verdict]}`,
@@ -927,8 +932,21 @@ function toHtml(f: Feasibility): string {
   return page({
     dir: f.planDir,
     file: "feasibility.html",
-    title: "Feasibility Report",
-    subtitle: `${esc(f.listing.address)} · summary written by ${esc(f.model)} · ${new Date(f.createdAt).toLocaleDateString("en-US")}`,
+    kind: "Feasibility report",
+    title: f.listing.address,
+    meta: [
+      [
+        "Lot",
+        f.listing.lotSqft ? `${f.listing.lotSqft.toLocaleString("en-US")} sq ft` : "Size n/a",
+      ],
+      ["Zoning", f.rules.district === "user-entered" ? "Typical defaults" : f.rules.district],
+      [
+        "Scheme",
+        `${f.homes} ${f.homes === 1 ? "home" : "homes"}, ${f.totalSqft.toLocaleString("en-US")} sq ft`,
+      ],
+      ["Summary written by", f.model],
+    ],
+    date: new Date(f.createdAt),
     body,
   });
 }

@@ -20,7 +20,7 @@
  * bot restarts.
  */
 
-export type JobKind = "design" | "estimate" | "timeline" | "feasibility";
+export type JobKind = "design" | "estimate" | "timeline" | "feasibility" | "interior";
 
 export type Job = {
   /** Unique id; the "Cancel" button on the job's status message carries it. */

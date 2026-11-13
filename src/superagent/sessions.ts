@@ -3,9 +3,10 @@
  *
  * Each conversation (a thread, a channel, or one person in a channel,
  * depending on SLACK_REPLY_MODE) remembers the last land search, the listings
- * we showed, which lot was picked, the latest plan and the project last asked
- * about. That is what lets someone write "design a house on Corral Lane" or
- * "same but under 200k" later without repeating everything. Below, "thread"
+ * we showed, which lot was picked, the latest plan, the jobs it is waiting for
+ * and its recent answers. The agent gets this with every message, which is
+ * what lets someone write "design a house on Corral Lane" or "why should I
+ * worry about them?" later without repeating everything. Below, "thread"
  * means whichever of these the bot is using.
  *
  * The memory lives in a Map while the bot runs and is also written to
@@ -16,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Listing } from "../agents/landSearch.ts";
+import { usd } from "../listingFormat.ts";
 import { PROJECT_ROOT } from "../paths.ts";
 
 /** SESSIONS_FILE lets test scripts use their own memory file instead of the bot's. */
@@ -40,14 +42,14 @@ export type Session = {
    * (see resumeJobs in superagent.ts). Each is removed when it ends.
    */
   jobs?: SavedJob[];
-  /** The construction project last asked about, so "why is it late?" knows which one. */
-  projectName?: string;
-  /**
-   * What SuperAgent last answered here, whether a quick answer (a project list)
-   * or an agent goal. A follow-up ("why should I worry about them?") is about
-   * this, so it is what the router and the agent are told.
-   */
+  /** What SuperAgent last answered here (the newest entry of `history`). */
   lastAnswer?: LastAnswer;
+  /**
+   * The last few answers here, oldest first (updateSession adds each new
+   * lastAnswer). Every message is a new agent mission, so this is how it
+   * knows what was asked, done and answered before.
+   */
+  history?: LastAnswer[];
   /** ISO timestamp of the last change, used for cleanup. */
   updatedAt: string;
 };
@@ -57,24 +59,51 @@ export type LastAnswer = {
   request: string;
   /** The answer, or a short description of it ("Listed 5 projects: …"). */
   summary: string;
+  /** The steps taken to answer it (the agent's checklist), if any. */
+  steps?: string[];
   /** ISO timestamp of the answer. */
   at: string;
 };
 
-/** How long after an answer a new message can still be a follow-up to it. */
-const FOLLOW_UP_MS = 60 * 60 * 1000;
+/** How many earlier answers are kept, and how old they may be, to give the agent. */
+const MAX_HISTORY = 5;
+const HISTORY_MS = 3 * 60 * 60 * 1000;
 
-/** The last answer in this conversation, if it was recent enough to be followed up on. */
-export function recentAnswer(session: Session): LastAnswer | undefined {
-  const a = session.lastAnswer;
-  return a && Date.now() - Date.parse(a.at) < FOLLOW_UP_MS ? a : undefined;
+/** What this conversation remembers, in a few lines for the agent. */
+export function threadSummary(session: Session): string {
+  const lines: string[] = [];
+  if (session.search)
+    lines.push(
+      `Last search: ${session.search.city}, budget "${session.search.budget}" (${usd(session.search.lo)} to ${usd(session.search.hi)}).`,
+    );
+  if (session.listings.length)
+    lines.push(
+      `Listings shown: ${session.listings.map((l) => l.address.split(",")[0]).join("; ")}.`,
+    );
+  if (session.selected) lines.push(`Selected lot: ${session.selected.address}.`);
+  for (const j of session.jobs ?? [])
+    lines.push(
+      `A ${j.kind} job${j.listing ? ` for ${j.listing.address.split(",")[0]}` : ""} is waiting or running.`,
+    );
+  if (session.planDir) {
+    lines.push("A house plan has been designed for the selected lot.");
+    if (existsSync(`${session.planDir}/estimate.json`)) lines.push("It has a cost estimate.");
+    if (existsSync(`${session.planDir}/timeline.json`))
+      lines.push("It has a construction timeline.");
+  }
+  return lines.length ? lines.join("\n") : "Nothing has happened in this thread yet.";
+}
+
+/** The recent answers in this conversation, oldest first. */
+export function recentHistory(session: Session): LastAnswer[] {
+  return (session.history ?? []).filter((a) => Date.now() - Date.parse(a.at) < HISTORY_MS);
 }
 
 /** Everything needed to start a slow job again: what kind it is, who asked, and its inputs. */
 export type SavedJob = {
   /** The queue job's id (see queue.ts). */
   id: string;
-  kind: "design" | "estimate" | "timeline" | "feasibility";
+  kind: "design" | "estimate" | "timeline" | "feasibility" | "interior";
   /** Slack user id of the person who asked. */
   user: string;
   /**
@@ -211,7 +240,10 @@ export async function forgetJob(key: string, id: string): Promise<void> {
 
 /** Change a thread's memory and save it to disk. */
 export async function updateSession(key: string, change: Partial<Session>): Promise<Session> {
-  const next: Session = { ...getSession(key), ...change, updatedAt: new Date().toISOString() };
+  const prev = getSession(key);
+  const next: Session = { ...prev, ...change, updatedAt: new Date().toISOString() };
+  if (change.lastAnswer)
+    next.history = [...(prev.history ?? []), change.lastAnswer].slice(-MAX_HISTORY);
   sessions.set(key, next);
   await save();
   return next;

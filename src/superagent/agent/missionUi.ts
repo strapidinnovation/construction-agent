@@ -13,8 +13,12 @@ import type { Mission } from "./missions.ts";
 /** action_ids of the mission buttons; src/slack.ts listens for them. Values carry the mission id. */
 export const MISSION_GO_BUTTON = "mission_go";
 export const MISSION_CANCEL_BUTTON = "mission_cancel";
-/** Its value is "<mission id>|<option index>". */
+/**
+ * Slack needs a unique action_id per button, so each answer button is
+ * "mission_answer_<option index>". Its value is "<mission id>|<option index>".
+ */
 export const MISSION_ANSWER_BUTTON = "mission_answer";
+export const MISSION_ANSWER_ACTION = new RegExp(`^${MISSION_ANSWER_BUTTON}_\\d+$`);
 
 const STEP_ICON = {
   running: ":hourglass_flowing_sand:",
@@ -99,7 +103,7 @@ export function questionReply(m: Mission, question: string, options: string[]): 
       type: "actions",
       elements: options.map((o, i) => ({
         type: "button" as const,
-        action_id: MISSION_ANSWER_BUTTON,
+        action_id: `${MISSION_ANSWER_BUTTON}_${i}`,
         text: { type: "plain_text" as const, text: shorten(o, 70) },
         value: `${m.id}|${i}`,
       })),
@@ -123,9 +127,10 @@ export function slackify(text: string): string {
     .trim();
 }
 
-/** "12m" / "1h 5m" */
+/** "8s" / "12m" / "1h 5m" */
 function duration(ms: number): string {
-  const min = Math.max(1, Math.round(ms / 60000));
+  if (ms < 60000) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  const min = Math.round(ms / 60000);
   return min >= 60 ? `${Math.floor(min / 60)}h ${min % 60}m` : `${min}m`;
 }
 
@@ -153,9 +158,10 @@ export function missionDoneReply(m: Mission, answer: string): Reply {
   };
 }
 
-export function missionBusyReply(m: Mission): Reply {
+export function missionBusyReply(active: Mission[]): Reply {
+  const goals = active.map((m) => `• _${shorten(m.goal, 100)}_`).join("\n");
   return {
-    text: `I'm still working on _${shorten(m.goal, 120)}_ here. Say \`@superagent cancel\` to stop it, or wait until it's done.`,
+    text: `I'm already working on ${active.length} things here:\n${goals}\nWait until one is done, or say \`@superagent cancel\` to stop the newest.`,
   };
 }
 

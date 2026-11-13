@@ -73,6 +73,8 @@ export type Mission = {
   /** Slow jobs the user has approved (added up over every approved plan) and how many were used. */
   approved: JobCounts;
   used: JobCounts;
+  /** A slow job ran without a plan because the user asked for exactly that one job (allowed once). */
+  directStep?: boolean;
   /** The plan waiting for approval. */
   pendingPlan?: { counts: JobCounts; minutes: number };
   /** The question waiting for an answer, with the options offered as buttons. */
@@ -125,17 +127,30 @@ export function saveMission(m: Mission): Promise<void> {
 const newId = () =>
   `m${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 6)}`;
 
-/** `previous`: the answer this goal follows up on; it goes before the new goal. */
+/** The earlier exchanges, as the model reads them before the new request. */
+function earlier(previous: LastAnswer[]): string {
+  return previous
+    .map((p, i) =>
+      [
+        `${i + 1}. The user asked: "${p.request}"`,
+        ...(p.steps?.length ? [`Steps you took: ${p.steps.join("; ")}`] : []),
+        `You answered:\n${p.summary}`,
+      ].join("\n"),
+    )
+    .join("\n\n");
+}
+
+/** `previous`: the recent exchanges in this conversation (oldest first); they go before the new goal. */
 export async function createMission(
   key: string,
   user: string,
   goal: string,
-  opts: { unattended?: boolean; previous?: LastAnswer } = {},
+  opts: { unattended?: boolean; previous?: LastAnswer[] } = {},
 ): Promise<Mission> {
   const now = new Date().toISOString();
-  const p = opts.previous;
-  const content = p
-    ? `Earlier in this conversation the user asked: "${p.request}"\nYou answered:\n${p.summary}\n\nNew request: ${goal}`
+  const previous = opts.previous ?? [];
+  const content = previous.length
+    ? `Earlier in this conversation (oldest first):\n\n${earlier(previous)}\n\nNew request: ${goal}`
     : goal;
   const m: Mission = {
     id: newId(),
@@ -144,7 +159,7 @@ export async function createMission(
     goal,
     state: "running",
     unattended: opts.unattended || undefined,
-    followsUp: p?.request,
+    followsUp: previous.at(-1)?.request,
     prompt: content,
     steps: [],
     listings: [],
@@ -180,9 +195,16 @@ const isWaiting = (m: Mission) =>
 
 const isActive = (m: Mission) => m.state === "running" || isWaiting(m);
 
-/** The unfinished mission in this conversation, if any (one at a time per conversation). */
+/** The unfinished missions in this conversation, oldest first. */
+export function activeMissions(key: string): Mission[] {
+  return allMissions()
+    .filter((m) => m.key === key && isActive(m))
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+/** The newest unfinished mission in this conversation, if any. */
 export function activeMission(key: string): Mission | undefined {
-  return allMissions().find((m) => m.key === key && isActive(m));
+  return activeMissions(key).at(-1);
 }
 
 /** This person's mission here that is waiting for them to approve a plan or answer a question. */

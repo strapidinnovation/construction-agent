@@ -1,6 +1,6 @@
 /**
  * The skills' model calls go through the two functions here:
- *   - chatJson: a reply that must match a JSON Schema (router, estimator, ...),
+ *   - chatJson: a reply that must match a JSON Schema (estimator, timeline, ...),
  *   - chatText: long free text with progress (the house designer).
  * (The agent talks to Claude through the Agent SDK instead; see agent/agent.ts.)
  *
@@ -31,11 +31,8 @@ function modelSetting(name: string, claudeDefault: string, ollamaDefault: string
   return process.env[name]?.trim() || ollamaDefault;
 }
 
-/** General-purpose model: project summaries, delay explanations, feasibility verdicts. */
+/** General-purpose model: feasibility verdicts and summaries. */
 export const MODEL = CLAUDE ? "sonnet" : "qwen3.5:9b";
-
-/** Reads every Slack message to decide what is wanted, so it should be fast. */
-export const ROUTER_MODEL = modelSetting("ROUTER_MODEL", "haiku", MODEL);
 
 export const DESIGN_MODEL = modelSetting("DESIGN_MODEL", "sonnet", MODEL);
 
