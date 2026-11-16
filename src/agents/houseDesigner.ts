@@ -84,11 +84,23 @@ function designRulesText(rules: ZoningRules): string {
   return lines.length ? `\n${lines.join("\n")}` : "";
 }
 
+/** A change order's changes, for a revised design. */
+function changesText(changes: string[]): string {
+  if (!changes.length) return "";
+  return `
+
+CHANGES FROM THE PREVIOUS DESIGN (a change order; the house types above already include them)
+${changes.map((c) => `- ${c}`).join("\n")}
+- Show every change in the floor plans and label new or changed rooms clearly.
+  Keep the rest of the layout as close to a typical plan for this house type as you can.`;
+}
+
 function buildPrompt(
   listing: Listing,
   lot: Lot,
   rules: ZoningRules,
   strategy: SiteStrategy,
+  changes: string[] = [],
 ): string {
   const pct = (v: number | null) => (v === null ? "no limit" : `${Math.round(v * 100)}%`);
   const lotSqft = lot.widthFt * lot.depthFt;
@@ -121,7 +133,7 @@ HOUSE TYPES
 ${strategy.houseTypes.map((t) => `- ${houseTypeLine(t)}`).join("\n")}
 - Every type has a living room, kitchen with dining area, laundry, entry and storage; the
   primary bedroom has its own bathroom and closet. Garages are attached and face the street
-  or the driveway.`;
+  or the driveway.${changesText(changes)}`;
 }
 
 function localTimestamp(d: Date): string {
@@ -256,8 +268,10 @@ export async function run(
   rules: ZoningRules,
   strategy: SiteStrategy,
   onProgress?: (p: Progress) => void,
+  /** For a revised design: what the change order changes. */
+  changes: string[] = [],
 ): Promise<Design> {
-  const prompt = buildPrompt(listing, lot, rules, strategy);
+  const prompt = buildPrompt(listing, lot, rules, strategy, changes);
   const think = process.env.DESIGN_THINK !== "false";
 
   const dir = `${PROJECT_ROOT}output/${localTimestamp(new Date())}_${slugify(listing.address)}`;

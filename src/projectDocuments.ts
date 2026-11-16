@@ -10,6 +10,12 @@
  *     whatever address it is for. These are remembered in
  *     data/project-documents.json (PROJECT_DOCUMENTS_FILE in tests).
  *
+ * Change order PDFs (output/change-orders/) belong to their change order's
+ * project. Documents in a design revision's folder say which revision and
+ * change order they are for, and the newest current design (an ordinary
+ * design or an approved revision) is marked as the current one. Revisions the
+ * user didn't save as a change order are left out.
+ *
  * Only PDFs inside output/ count; output/ is not committed, so neither is the
  * list of filed ones.
  */
@@ -17,7 +23,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node
 import { rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import { listChangeOrders } from "./changeOrders.ts";
 import { PROJECT_ROOT } from "./paths.ts";
+import { isCurrentPlan, readRevision, type RevisionStatus } from "./revisions.ts";
 import type { Project } from "./superagent/skills/projects.ts";
 
 export const OUTPUT_DIR = join(PROJECT_ROOT, "output");
@@ -38,6 +46,7 @@ export const DOCUMENT_KINDS = [
   "timeline",
   "feasibility",
   "interior",
+  "change-order",
   "other",
 ] as const;
 export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
@@ -142,13 +151,30 @@ export type ProjectDocument = {
   /** When the file was made. */
   createdAt: string;
   /** How it belongs to the project (both, if it was also posted in the project's chat). */
-  sources: ("address" | "chat")[];
+  sources: ("address" | "chat" | "change-order")[];
+  /** The design folder it is in, for documents made for the address. */
+  folder: DocumentFolder | null;
+};
+
+export type DocumentFolder = {
+  /** The folder name in output/. */
+  name: string;
+  /** The design (or approved revision) the project's reports come from now. */
+  current: boolean;
+  /** Set for a design revision: its number (1 for the first), change order and state. */
+  revision: {
+    number: number;
+    title: string;
+    changeOrderId: string | null;
+    status: Exclude<RevisionStatus, "discarded">;
+  } | null;
 };
 
 function describe(
   path: string,
   sources: ProjectDocument["sources"],
   title?: string,
+  folder: DocumentFolder | null = null,
 ): ProjectDocument | null {
   const full = join(OUTPUT_DIR, path);
   if (!existsSync(full)) return null;
@@ -163,18 +189,54 @@ function describe(
     sizeBytes: stat.size,
     createdAt: stat.mtime.toISOString(),
     sources,
+    folder,
   };
+}
+
+/** The address's design folders, oldest first, numbered and marked (discarded revisions left out). */
+function designFolders(address: string): { dir: string; folder: DocumentFolder }[] {
+  const dirs = foldersFor(address).reverse();
+  const current = [...dirs]
+    .reverse()
+    .find((d) => existsSync(join(d, "plan.svg")) && isCurrentPlan(d));
+  let revisions = 0;
+  const list: { dir: string; folder: DocumentFolder }[] = [];
+  for (const dir of dirs) {
+    const r = readRevision(dir);
+    if (r?.status === "discarded") continue;
+    list.push({
+      dir,
+      folder: {
+        name: basename(dir),
+        current: dir === current,
+        revision: r
+          ? {
+              number: ++revisions,
+              title: r.title,
+              changeOrderId: r.changeOrderId,
+              status: r.status,
+            }
+          : null,
+      },
+    });
+  }
+  return list;
 }
 
 /** Every PDF of a project, newest first. */
 export function projectDocuments(project: Project): ProjectDocument[] {
   const found = new Map<string, ProjectDocument>();
-  for (const folder of foldersFor(project.data.site.address)) {
-    for (const file of readdirSync(folder)) {
+  for (const { dir, folder } of designFolders(project.data.site.address)) {
+    for (const file of readdirSync(dir)) {
       if (!file.toLowerCase().endsWith(".pdf")) continue;
-      const doc = describe(join(basename(folder), file), ["address"]);
+      const doc = describe(join(basename(dir), file), ["address"], undefined, folder);
       if (doc) found.set(doc.path, doc);
     }
+  }
+  for (const co of listChangeOrders({ projectId: project.data.id })) {
+    if (!co.pdf) continue;
+    const doc = describe(co.pdf, ["change-order"], `Change order ${co.id}: ${co.title}`);
+    if (doc) found.set(doc.path, { ...doc, kind: "change-order" });
   }
   for (const f of filed.filter((d) => d.projectId === project.data.id)) {
     const known = found.get(f.path);

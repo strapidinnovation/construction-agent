@@ -501,6 +501,44 @@ export async function updateProject(id: string, patch: ProjectPatch): Promise<Pr
   return compute(data);
 }
 
+const addDays = (date: string, days: number) =>
+  new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+/**
+ * An approved change order: add its amount to the approved change orders,
+ * move the forecast finish by its days and note it in the site log. The
+ * original contract and planned finish stay, so original + changes = current.
+ */
+export async function addChangeOrder(
+  id: string,
+  co: { id: string; title: string; amountUsd: number; daysAdded: number },
+): Promise<Project> {
+  const p = loadProjects().find((x) => x.data.id === id);
+  if (!p) throw new ProjectError("not-found", `No project ${id}.`);
+  const d = p.data;
+  const money = `${co.amountUsd < 0 ? "-" : "+"}$${Math.abs(co.amountUsd).toLocaleString("en-US")}`;
+  const days = co.daysAdded ? `, ${co.daysAdded > 0 ? "+" : ""}${co.daysAdded} days` : "";
+  const data: ProjectFile = {
+    ...d,
+    budget: {
+      ...d.budget,
+      approvedChangeOrdersUsd:
+        Math.round((d.budget.approvedChangeOrdersUsd + co.amountUsd) * 100) / 100,
+    },
+    dates: { ...d.dates, forecastFinish: addDays(d.dates.forecastFinish, co.daysAdded) },
+    updates: [
+      {
+        date: today(),
+        author: "SuperAgent",
+        note: `Change order ${co.id} approved: ${co.title} (${money}${days}).`,
+      },
+      ...d.updates,
+    ],
+  };
+  await write(data);
+  return compute(data);
+}
+
 /** A project change the agent proposed and the user has to confirm. */
 export type ProjectChange = { entity: "project" } & (
   { action: "create"; input: ProjectFile } | { action: "update"; id: string; patch: ProjectPatch }

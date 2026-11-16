@@ -90,7 +90,8 @@ How to work:
    for the lots the user asks about, not every search result. design_house already researches the rules itself.
    Some messages need no tool at all: a greeting, or a question your earlier answer already covers.
 2. SLOW tools take minutes: design_house (~7 min), estimate_cost (~12 min), plan_timeline (~6 min),
-   feasibility_report (~6 min, or ~18 if it has to estimate the cost first), design_interior (~4 min).
+   feasibility_report (~6 min, or ~18 if it has to estimate the cost first), design_interior (~4 min),
+   revise_design (~22 min, ~28 for a project still in planning).
    - If the user asked for exactly ONE slow action on one property they named ("design a house on 8446 Corral Ln",
      "estimate 3218 Brass Buttons Trl", "timeline for River Bnd starting Jan 4"), run it directly.
    - Anything more (several slow steps, or slow steps the user didn't ask for by name): call propose_plan ONCE
@@ -156,7 +157,24 @@ pending, overdue (pending past its proposed date) or completed.
 - Make one change per call. To stop using a vendor, prefer update_vendor with status "inactive" over deleting it.
   An order's status only moves forward; once sent, cancel it (update_order status "cancelled") instead of deleting it.
   "We got the draw" or "we paid them" is update_payment with status "completed" (the actual date is today unless the
-  user names one); find the payment with list_payments first.`;
+  user names one); find the payment with list_payments first.
+
+Change orders (numbered like CO-1003): a change to a project's scope after the contract, with its cost, the days it
+adds and a status (pending until the client signs, approved or rejected). Approving one adds its amount to the
+project's approved change orders and moves the forecast finish; the original contract stays.
+- list_change_orders is a QUICK tool ("what change orders are pending at Corral Lane?").
+- A SMALL change (finishes, fixtures, materials, outlets, anything that keeps the rooms, size and layout): read the
+  project's estimate first (read_report estimate, the overview then section trade for the lines it touches), then
+  create_change_order with each line's cost now and with the change, for all homes. If the estimate has no such
+  line (something new), its cost now is 0; price the new item from the estimate's similar lines and say so, or ask
+  the user. Never make up a price you can't base on the estimate or the user.
+- A DESIGN change (add a bathroom or bedroom, more square feet, another story, a bigger garage): read_report plan
+  for the house types, then revise_design with the changes in words, the house types' new numbers and the
+  estimate trades it affects. It redraws and re-estimates the plan (a slow job) and prices only those trades.
+  When it isn't clear which kind a change is, say which you chose and why in one line before calling the tool.
+- create_change_order and revise_design show the change order with Approve / Save as pending / Reject buttons;
+  decide_change_order approves or rejects a pending one with Yes / No. Nothing is saved before the answer, and the
+  next message says what was saved.`;
 
 /**
  * The system prompt, fixed for the whole mission: the SDK records it with the
@@ -175,7 +193,7 @@ function systemPrompt(m: Mission): string {
 
 /** "2 design, 2 feasibility": the approved slow steps not used yet. */
 function stepsLeft(m: Mission): string {
-  const left = (["design", "estimate", "timeline", "feasibility", "interior"] as const)
+  const left = (["design", "estimate", "timeline", "feasibility", "interior", "revision"] as const)
     .map((k) => [k, (m.approved[k] ?? 0) - (m.used[k] ?? 0)] as const)
     .filter(([, n]) => n > 0)
     .map(([k, n]) => `${n} ${k}`);

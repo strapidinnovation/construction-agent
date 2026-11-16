@@ -15,6 +15,7 @@ import {
   type ProjectFilter,
   type ProjectStatus,
 } from "../superagent/skills/projects.ts";
+import { listChangeOrders } from "../changeOrders.ts";
 import { getVendor } from "../vendors.ts";
 
 export function projectSummary(p: Project) {
@@ -43,6 +44,7 @@ export function projectSummary(p: Project) {
     onHold: d.onHold ?? null,
     dates: d.dates,
     budget: d.budget,
+    pendingChangeOrders: listChangeOrders({ projectId: d.id, status: "pending" }).length,
   };
 }
 

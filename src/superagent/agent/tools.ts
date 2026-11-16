@@ -36,7 +36,23 @@ import { runSiteChecks, type Flag, type SiteChecks } from "../../agents/siteChec
 import { HOUSING_TYPE_LABEL, STRATEGY_LABEL, type SiteStrategy } from "../../agents/sitePlanner.ts";
 import { researchSiteRules } from "../../agents/siteRules.ts";
 import type { Timeline } from "../../agents/timelinePlanner.ts";
+import {
+  CHANGE_ORDER_KINDS,
+  CHANGE_ORDER_STATUSES,
+  changeOrderSummary,
+  changeOrderView,
+  createChangeOrder,
+  decideChangeOrder,
+  getChangeOrder,
+  linesTotal,
+  listChangeOrders,
+  type ChangeOrderChange,
+  type ChangeOrderInput,
+  type ChangeOrderStatus,
+  type ChangeOrderView,
+} from "../../changeOrders.ts";
 import { usd } from "../../listingFormat.ts";
+import { isCurrentPlan, markRevision } from "../../revisions.ts";
 import { bestMatch } from "../match.ts";
 import { findPlanByName, listingOfPlan, savedPlans, streetOf } from "../plans.ts";
 import { allJobs, type JobKind } from "../queue.ts";
@@ -99,6 +115,13 @@ import { getSession, threadSummary, updateSession } from "../sessions.ts";
 import { searchLand } from "../skills/search.ts";
 import { draftProject } from "../skills/projectFromPlan.ts";
 import {
+  currentDesign,
+  editHouseTypes,
+  matchTrades,
+  tradeTotals,
+  type RevisionResult,
+} from "../skills/revision.ts";
+import {
   applyProjectChange,
   findProject,
   listProjects,
@@ -122,6 +145,7 @@ import {
   queueEstimate,
   queueFeasibility,
   queueInterior,
+  queueRevision,
   queueTimeline,
   type Ctx,
   type QueueOpts,
@@ -148,6 +172,7 @@ const MINUTES: Record<JobKind, number> = {
   timeline: 6,
   feasibility: 6,
   interior: 4,
+  revision: 22,
 };
 
 /** What a tool gets to work with: the conversation (to post into) and the mission. */
@@ -913,7 +938,9 @@ function reportFolder(
   else if (plan.kind === "ambiguous")
     problems.push(`properties ${plan.items.map((p) => streetOf(p.listing.address)).join(" and ")}`);
   for (const c of candidates) {
-    const dir = foldersFor(c.address).find((d) => existsSync(join(d, REPORT_FILE[report])));
+    const dir = foldersFor(c.address).find(
+      (d) => existsSync(join(d, REPORT_FILE[report])) && isCurrentPlan(d),
+    );
     if (dir) return { dir, subject: c.subject };
   }
   if (candidates.length)
@@ -1309,15 +1336,16 @@ function flatEntries(shape: Record<string, unknown>): [string, unknown][] {
 const sameName = (name: string, exceptId?: string) =>
   listVendors().find((v) => v.id !== exceptId && v.name.toLowerCase() === name.toLowerCase());
 
-/** Show the change with Yes / No buttons and pause the mission until the user answers. */
+/** Show the change with Yes / No buttons (or other answers) and pause the mission until the user answers. */
 async function askToConfirm(
   { ctx, mission }: ToolEnv,
   change: PendingChange,
   text: string,
   done: string,
+  ask = { question: "Shall I save this?", options: [CONFIRM_YES, CONFIRM_NO] },
 ): Promise<ToolOutcome> {
-  const options = [CONFIRM_YES, CONFIRM_NO];
-  await ctx.out.reply(questionReply(mission, `${text}\n\nShall I save this?`, options));
+  const { options } = ask;
+  await ctx.out.reply(questionReply(mission, `${text}\n\n${ask.question}`, options));
   mission.state = "waiting-answer";
   mission.pendingQuestion = { question: text, options };
   mission.pendingChange = change;
@@ -1342,16 +1370,28 @@ export async function settlePendingChange(
   m.pendingChange = undefined;
   if (!change)
     return { prompt: `The user answered: "${answer}"`, step: `You answered: "${answer}"` };
-  const what = "entity" in change ? change.entity : "vendor";
+  const what = "entity" in change ? change.entity.replace("-", " ") : "vendor";
+  if ("entity" in change && change.entity === "change-order" && change.action === "create")
+    return settleNewChangeOrder(change.input, answer);
   if (answer !== CONFIRM_YES && !TYPED_YES.test(answer))
     return {
       prompt: `The user did not confirm the ${what} change, so nothing was saved. They said: "${answer}". If they asked for something different, propose that change instead; otherwise tell them nothing was changed.`,
       step: "Not confirmed: nothing saved",
     };
-  const did = { create: "added", update: "updated", delete: "deleted" }[change.action];
+  const did = { create: "added", update: "updated", delete: "deleted", decide: "decided" }[
+    change.action
+  ];
   const saved = (detail: unknown) =>
     change.action === "delete" ? "" : ` Saved: ${JSON.stringify(detail)}`;
   try {
+    if ("entity" in change && change.entity === "change-order") {
+      if (change.action !== "decide") throw new Error("Unexpected change order change.");
+      const co = await decideChangeOrder(change.id, change.status);
+      return {
+        prompt: `The user confirmed. Change order ${co.id} is now ${co.status}.${co.status === "approved" ? ` Its ${signedUsd(co.amountUsd)} was added to the project's approved change orders and the forecast finish moved by ${co.daysAdded} days.${co.revision ? " Its revised design is now the project's current design." : ""}` : ""} Its PDF is on the project's Documents tab.`,
+        step: `Change order ${co.status}: ${co.id} ${co.title}`,
+      };
+    }
     if ("entity" in change && change.entity === "project") {
       const p = await applyProjectChange(change);
       return {
@@ -1527,7 +1567,7 @@ const deleteVendorTool = defineTool({
 // Same rules as vendors: reading is quick, changes are confirmed first.
 // ---------------------------------------------------------------------------
 
-type PendingChange = VendorChange | OrderChange | PaymentChange | ProjectChange;
+type PendingChange = VendorChange | OrderChange | PaymentChange | ProjectChange | ChangeOrderChange;
 
 function projectOr(query: string): { project: Project } | { error: string } {
   const found = findProject(query);
@@ -2122,6 +2162,394 @@ const updateProjectTool = defineTool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Change orders. A small change is priced from the estimate's lines; a design
+// change redraws and re-estimates the plan first (a slow job). Either way the
+// user answers Approve / Save as pending / Reject before anything is saved.
+// ---------------------------------------------------------------------------
+
+const CO_APPROVE = "Approve";
+const CO_PENDING = "Save as pending";
+const CO_REJECT = "Reject";
+const CO_ASK = {
+  question: "Approve it now, save it as pending until the client signs, or reject it?",
+  options: [CO_APPROVE, CO_PENDING, CO_REJECT],
+};
+
+/** The status a typed or clicked answer asks for, or null if it isn't one of the three. */
+function changeOrderAnswer(answer: string): ChangeOrderStatus | null {
+  if (answer === CO_APPROVE) return "approved";
+  if (answer === CO_PENDING) return "pending";
+  if (answer === CO_REJECT) return "rejected";
+  if (/^\s*(save( it)?( as)? pending|pending|save( it)?|later|wait)\b[\s.!]*$/i.test(answer))
+    return "pending";
+  if (/^\s*(reject(ed)?|decline(d)?)\b[\s.!]*$/i.test(answer)) return "rejected";
+  if (/^\s*(approve(d)?|yes|y|yep|yeah|ok|okay|sure|go ahead|do it)\b[\s.!]*$/i.test(answer))
+    return "approved";
+  return null;
+}
+
+async function settleNewChangeOrder(
+  input: ChangeOrderInput,
+  answer: string,
+): Promise<{ prompt: string; step: string }> {
+  const status = changeOrderAnswer(answer);
+  if (!status) {
+    if (input.revision)
+      await markRevision(join(OUTPUT_DIR, input.revision.dir), { status: "discarded" });
+    return {
+      prompt: `The user didn't approve, save or reject the change order, so nothing was saved${input.revision ? " and the revised design was set aside" : ""}. They said: "${answer}". If they asked for something different (another amount, other days), propose the change order again with that (for a design change, create_change_order can't reuse the revision: run revise_design again only if the design itself must change); otherwise tell them nothing was saved.`,
+      step: "Not saved",
+    };
+  }
+  try {
+    const co = await createChangeOrder({ ...input, status });
+    const effect =
+      status === "approved"
+        ? ` Its ${signedUsd(co.amountUsd)} was added to the project's approved change orders and the forecast finish moved by ${co.daysAdded} days.${co.revision ? " The revised design is now the project's current design." : ""}`
+        : status === "pending"
+          ? " It waits for the client: approve or reject it later with decide_change_order."
+          : co.revision
+            ? " The revised design stays on file but isn't used."
+            : "";
+    return {
+      prompt: `The user chose "${answer}". Change order ${co.id} was saved as ${status}.${effect} Its PDF is on the project's Documents tab (and the Change orders tab).`,
+      step: `Change order ${co.id} saved as ${status}`,
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return {
+      prompt: `The user answered, but saving the change order failed, so nothing was saved: ${error}`,
+      step: "Change order failed",
+    };
+  }
+}
+
+const signedUsd = (n: number) => `${n < 0 ? "-" : "+"}${usd(Math.abs(n))}`;
+const signedDays = (n: number) => `${n > 0 ? "+" : ""}${n} ${Math.abs(n) === 1 ? "day" : "days"}`;
+const shiftDate = (iso: string, days: number) =>
+  new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+/** The proposal shown to the user: the change, its lines, and what it does to the contract and finish. */
+function changeOrderText(p: Project, input: ChangeOrderInput, extra: string[] = []): string {
+  const d = p.data;
+  const contract = d.budget.contractUsd + d.budget.approvedChangeOrdersUsd;
+  return [
+    `📝 Change order for **${d.name}**: **${input.title}**`,
+    "",
+    `- Kind: ${input.kind === "design" ? "design change (revised plan and estimate)" : "small change (same design)"}`,
+    ...(input.reason ? [`- Reason: ${input.reason}`] : []),
+    ...input.lines.map(
+      (l) =>
+        `- ${l.trade}${l.item ? `, ${l.item}` : ""}: ${usd(l.oldUsd)} → ${usd(l.newUsd)} (${signedUsd(l.newUsd - l.oldUsd)})${l.note ? `. ${l.note}` : ""}`,
+    ),
+    `- **Amount: ${signedUsd(input.amountUsd)}** (contract ${usd(contract)} → ${usd(contract + input.amountUsd)})`,
+    `- Schedule: ${signedDays(input.daysAdded)} (forecast finish ${d.dates.forecastFinish} → ${shiftDate(d.dates.forecastFinish, input.daysAdded)})`,
+    ...extra,
+  ].join("\n");
+}
+
+const changeOrderBrief = (c: ChangeOrderView) => ({
+  changeOrder: c.id,
+  project: c.project?.name ?? c.projectId,
+  kind: c.kind,
+  title: c.title,
+  ...(c.reason ? { reason: c.reason } : {}),
+  status: c.status,
+  amountUsd: c.amountUsd,
+  daysAdded: c.daysAdded,
+  requestedOn: c.requestedOn,
+  decidedOn: c.decidedOn,
+  lines: c.lines.map((l) => ({
+    trade: l.trade,
+    ...(l.item ? { item: l.item } : {}),
+    oldUsd: l.oldUsd,
+    newUsd: l.newUsd,
+  })),
+  ...(c.revision ? { revisedDesign: c.revision.dir, changes: c.revision.changes } : {}),
+});
+
+function openProjectOr(query: string): { project: Project } | { error: string } {
+  const found = projectOr(query);
+  if ("error" in found) return found;
+  if (found.project.status === "completed")
+    return { error: `${found.project.data.name} is completed, so it takes no more change orders.` };
+  return found;
+}
+
+const listChangeOrdersTool = defineTool({
+  name: "list_change_orders",
+  description:
+    'A project\'s change orders (numbered like CO-1003): changes to the scope after the contract, each with an amount, the days it adds and a status ("pending" waits for the client, "approved", "rejected"). Returns pending / approved / rejected totals and the change orders, newest first. Filter by project, status or kind ("small" or "design").',
+  params: z.object({
+    project: z.string().optional().describe("Project name"),
+    status: z.enum(CHANGE_ORDER_STATUSES).optional(),
+    kind: z.enum(CHANGE_ORDER_KINDS).optional(),
+  }),
+  label: (a) => `Listing change orders${a.project ? ` for ${a.project}` : ""}`,
+  async run(a) {
+    const project = a.project ? projectOr(a.project) : undefined;
+    if (project && "error" in project) return fail(project.error);
+    const projectId = project?.project.data.id;
+    const all = listChangeOrders({ projectId });
+    const matching = listChangeOrders({ projectId, status: a.status, kind: a.kind });
+    return {
+      result: {
+        summary: changeOrderSummary(all),
+        changeOrders: matching.slice(0, 40).map((c) => changeOrderBrief(changeOrderView(c))),
+        ...(project
+          ? {
+              contract: {
+                originalUsd: project.project.data.budget.contractUsd,
+                approvedChangeOrdersUsd: project.project.data.budget.approvedChangeOrdersUsd,
+              },
+            }
+          : {}),
+      },
+      done: `Listed ${matching.length} change orders`,
+    };
+  },
+});
+
+const coLine = z.object({
+  trade: z.string().describe('The estimate\'s trade, e.g. "Interior finishes"'),
+  item: z.string().optional().describe('The item in it, e.g. "Kitchen countertops"'),
+  oldUsd: z.number().min(0).describe("What the estimate has now (0 for something new)"),
+  newUsd: z.number().min(0).describe("What it costs with the change (0 if removed)"),
+  note: z.string().optional(),
+});
+
+const createChangeOrderTool = defineTool({
+  name: "create_change_order",
+  description:
+    "A SMALL change order: finishes, fixtures, material swaps, extra outlets or anything else that doesn't change the house's rooms, size or layout (for those use revise_design). Price it line by line from the project's estimate first (read_report estimate, section trade): each line is the trade (and item) with what it costs now and with the change, for all homes. The amount is the lines' total unless you give amountUsd (the user's figure). daysAdded is your estimate of the delay (0 if none). Shows the change order with Approve / Save as pending / Reject buttons and pauses; nothing is saved before the answer.",
+  params: z.object({
+    project: z.string().describe("Project name"),
+    title: z.string().describe('Short, e.g. "Quartz countertops instead of laminate"'),
+    reason: z.string().optional().describe('e.g. "Client request"'),
+    lines: z.array(coLine).min(1).max(20),
+    amountUsd: z.number().optional().describe("Only if the user gave the amount"),
+    daysAdded: z.number().int().optional(),
+    notes: z.string().optional(),
+  }),
+  label: (a) => `Pricing a change order for ${a.project}`,
+  async run(a, env) {
+    const found = openProjectOr(a.project);
+    if ("error" in found) return fail(found.error);
+    const lines = a.lines.map((l) => ({
+      trade: l.trade,
+      item: l.item ?? null,
+      oldUsd: Math.round(l.oldUsd),
+      newUsd: Math.round(l.newUsd),
+      note: l.note ?? "",
+    }));
+    const input: ChangeOrderInput = {
+      projectId: found.project.data.id,
+      kind: "small",
+      title: a.title,
+      reason: a.reason ?? "",
+      lines,
+      amountUsd: a.amountUsd ?? linesTotal(lines),
+      daysAdded: a.daysAdded ?? 0,
+      revision: null,
+      status: "pending",
+      notes: a.notes ?? "",
+    };
+    return askToConfirm(
+      env,
+      { entity: "change-order", action: "create", input },
+      changeOrderText(found.project, input),
+      `Asked about the change order: ${a.title}`,
+      CO_ASK,
+    );
+  },
+});
+
+const reviseDesignTool = defineTool({
+  name: "revise_design",
+  slow: "revision",
+  description:
+    "SLOW (~22 min, ~28 with a timeline; needs no plan when it is the only slow step asked for). A DESIGN change order: a change to the house itself (add a bathroom or bedroom, more square feet, another story, a bigger garage). Redraws the project's current design with the change into a new folder (the original stays), estimates it again and, for a project still in planning, plans its timeline again. Then prices the change by comparing ONLY the affectedTrades with the original estimate (an estimate made again differs a little in every trade, so the totals aren't compared), and shows the change order with Approve / Save as pending / Reject buttons. Read the plan first (read_report plan) for the house types and give their new numbers in houseTypes.",
+  params: z.object({
+    project: z.string().describe("Project name"),
+    title: z.string().describe('Short, e.g. "Add a full bathroom on the second floor"'),
+    reason: z.string().optional(),
+    changes: z
+      .array(z.string())
+      .min(1)
+      .max(8)
+      .describe(
+        'Each change in words, for the drawing, e.g. "Add a full bathroom between bedrooms 2 and 3 on the second floor"',
+      ),
+    houseTypes: z
+      .array(
+        z.object({
+          type: z.string().describe('The house type, e.g. "A"'),
+          bedrooms: z.number().int().optional(),
+          bathrooms: z.number().optional(),
+          heatedSqft: z.number().optional(),
+          stories: z.number().int().optional(),
+          garage: z.enum(["2-car", "1-car", "none"]).optional(),
+        }),
+      )
+      .max(3)
+      .describe("New values for the house types that change; leave out what stays"),
+    affectedTrades: z
+      .array(z.string())
+      .min(1)
+      .describe(
+        'The estimate trades the change affects, e.g. ["Plumbing", "Framing & sheathing", "Interior finishes"]',
+      ),
+    daysAdded: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        "Your estimate of the delay, for a project under construction (a planning project's new timeline decides)",
+      ),
+    amountUsd: z.number().optional().describe("Only if the user gave the amount"),
+  }),
+  label: (a) => `Revising the design of ${a.project}: ${a.title}`,
+  async run(a, env) {
+    const found = openProjectOr(a.project);
+    if ("error" in found) return fail(found.error);
+    const project = found.project;
+    const current = currentDesign(project.data.site.address);
+    if (!current.planDir)
+      return fail(
+        `${project.data.name} has no design to revise. Design its property first (design_house), or price it as a small change.`,
+      );
+    const inputs = readJson<{ lot: never; rules: never }>(join(current.planDir, "inputs.json"));
+    const strategy = readJson<SiteStrategy>(join(current.planDir, "strategy.json"));
+    if (!inputs || !strategy) return fail("The current design's files are missing.");
+    try {
+      editHouseTypes(strategy.houseTypes, a.houseTypes, inputs.lot, inputs.rules);
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err));
+    }
+    const oldEstimate = current.estimateDir
+      ? readJson<Estimate>(join(current.estimateDir, "estimate.json"))
+      : null;
+    if (oldEstimate) {
+      const { missing } = matchTrades([...tradeTotals(oldEstimate).keys()], a.affectedTrades);
+      if (missing.length)
+        return fail(
+          `No trade called ${missing.map((m) => `"${m}"`).join(", ")} in the estimate. Its trades: ${[...tradeTotals(oldEstimate).keys()].join("; ")}.`,
+        );
+    } else if (a.amountUsd === undefined)
+      return fail(
+        `${project.data.name} has no cost estimate to compare the revised one with. Ask the user for the change order's amount (amountUsd), or estimate the current design first (estimate_cost).`,
+      );
+
+    const planning = project.status === "planning";
+    const today = new Date().toISOString().slice(0, 10);
+    let revised: RevisionResult | undefined;
+    const outcome = await runSlow(
+      env,
+      "revision",
+      (ctx) =>
+        queueRevision(
+          ctx,
+          {
+            baseDir: current.planDir!,
+            title: a.title,
+            changes: a.changes,
+            houseTypes: a.houseTypes,
+            affectedTrades: a.affectedTrades,
+            timelineStart: planning
+              ? project.data.dates.start > today
+                ? project.data.dates.start
+                : ""
+              : null,
+          },
+          AGENT_JOB,
+        ),
+      (r) => {
+        revised = r;
+        return { result: null };
+      },
+    );
+    if (!revised) return outcome;
+    const r = revised;
+
+    const lines = r.affected.map((t) => ({ ...t, item: null, note: "" }));
+    const days = planning && r.timelineDays !== null ? r.timelineDays : (a.daysAdded ?? 0);
+    const input: ChangeOrderInput = {
+      projectId: project.data.id,
+      kind: "design",
+      title: a.title,
+      reason: a.reason ?? "",
+      lines,
+      amountUsd: a.amountUsd ?? linesTotal(lines),
+      daysAdded: days,
+      revision: { dir: basename(r.dir), basedOn: basename(r.baseDir), changes: a.changes },
+      status: "pending",
+      notes: "",
+    };
+    const oldTotal = oldEstimate?.totalUsd;
+    const extra = [
+      `- Revised estimate: ${usd(Math.round(r.estimate.estimate.totalUsd))}${oldTotal ? ` (original ${usd(Math.round(oldTotal))}). Only the trades above are counted: the rest differ a little each time an estimate is made.` : ""}`,
+      ...(r.timeline
+        ? [
+            `- Revised timeline: finishes ${r.timeline.timeline.finishDate}${r.timelineDays !== null ? ` (${signedDays(r.timelineDays)})` : ""}`,
+          ]
+        : []),
+    ];
+    const asked = await askToConfirm(
+      env,
+      { entity: "change-order", action: "create", input },
+      changeOrderText(project, input, extra),
+      `Asked about the change order: ${a.title}`,
+      CO_ASK,
+    );
+    return {
+      ...asked,
+      result: {
+        revisedDesign: basename(r.dir),
+        revisedEstimateUsd: Math.round(r.estimate.estimate.totalUsd),
+        originalEstimateUsd: oldTotal ? Math.round(oldTotal) : null,
+        affectedTrades: r.affected,
+        amountUsd: input.amountUsd,
+        daysAdded: days,
+        next: asked.result,
+      },
+    };
+  },
+});
+
+const decideChangeOrderTool = defineTool({
+  name: "decide_change_order",
+  description:
+    "Approve or reject a PENDING change order (e.g. \"the client signed CO-1003\"). Approving adds its amount to the project's approved change orders and moves the forecast finish by its days; a design change's revised design becomes the current one. Shows it with Yes / No buttons and pauses; nothing is saved before yes.",
+  params: z.object({
+    changeOrder: z.string().describe('e.g. "CO-1003"'),
+    decision: z.enum(["approve", "reject"]),
+  }),
+  label: (a) =>
+    `${a.decision === "approve" ? "Approving" : "Rejecting"} change order ${a.changeOrder}`,
+  async run(a, env) {
+    const co = getChangeOrder(a.changeOrder);
+    if (!co) return fail(`No change order "${a.changeOrder}". They are numbered like CO-1003.`);
+    if (co.status !== "pending") return fail(`${co.id} is already ${co.status}.`);
+    const status = a.decision === "approve" ? "approved" : "rejected";
+    const view = changeOrderView(co);
+    return askToConfirm(
+      env,
+      { entity: "change-order", action: "decide", id: co.id, status },
+      [
+        `${a.decision === "approve" ? "Approve" : "Reject"} change order **${co.id}** for **${view.project?.name ?? co.projectId}**: ${co.title}`,
+        `- Amount: ${signedUsd(co.amountUsd)}`,
+        `- Schedule: ${signedDays(co.daysAdded)}`,
+        ...(co.revision && status === "approved"
+          ? ["- Its revised design becomes the project's current design."]
+          : []),
+      ].join("\n"),
+      `Asked to ${a.decision} ${co.id}`,
+      { question: `Shall I mark it ${status}?`, options: [CONFIRM_YES, CONFIRM_NO] },
+    );
+  },
+});
+
 const designTool = defineTool({
   name: "design_house",
   slow: "design",
@@ -2328,6 +2756,7 @@ const PLAN_STEP_TOOLS = [
   "plan_timeline",
   "feasibility_report",
   "design_interior",
+  "revise_design",
 ] as const;
 
 const SLOW_KIND: Partial<Record<(typeof PLAN_STEP_TOOLS)[number], JobKind>> = {
@@ -2336,6 +2765,7 @@ const SLOW_KIND: Partial<Record<(typeof PLAN_STEP_TOOLS)[number], JobKind>> = {
   plan_timeline: "timeline",
   feasibility_report: "feasibility",
   design_interior: "interior",
+  revise_design: "revision",
 };
 
 const STEP_VERB: Record<(typeof PLAN_STEP_TOOLS)[number], string> = {
@@ -2350,6 +2780,7 @@ const STEP_VERB: Record<(typeof PLAN_STEP_TOOLS)[number], string> = {
   plan_timeline: "Plan the timeline for",
   feasibility_report: "Feasibility report for",
   design_interior: "Design the 3D interior for",
+  revise_design: "Revise the design for a change order:",
 };
 
 const proposePlanTool = defineTool({
@@ -2455,6 +2886,10 @@ export const TOOLS: AgentTool[] = [
   readReportTool,
   createProjectTool,
   updateProjectTool,
+  listChangeOrdersTool,
+  createChangeOrderTool,
+  reviseDesignTool,
+  decideChangeOrderTool,
   listVendorsTool,
   vendorDetailsTool,
   createVendorTool,

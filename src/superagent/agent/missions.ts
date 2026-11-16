@@ -26,6 +26,7 @@ import type { JobKind } from "../queue.ts";
 import type { OrderChange } from "../../orders.ts";
 import type { PaymentChange } from "../../payments.ts";
 import type { VendorChange } from "../../vendors.ts";
+import type { ChangeOrderChange } from "../../changeOrders.ts";
 import type { ProjectChange } from "../skills/projects.ts";
 import { isWebKey, type LastAnswer } from "../sessions.ts";
 
@@ -82,7 +83,7 @@ export type Mission = {
   /** The question waiting for an answer, with the options offered as buttons. */
   pendingQuestion?: { question: string; options: string[] };
   /** A vendor, order or payment change waiting for the user's yes; code makes it only after they confirm. */
-  pendingChange?: VendorChange | OrderChange | PaymentChange | ProjectChange;
+  pendingChange?: VendorChange | OrderChange | PaymentChange | ProjectChange | ChangeOrderChange;
   /** The slow job running for this mission right now (to cancel it with the mission). */
   inflight?: { jobId: string; kind: JobKind };
   /** How many model turns the mission has used (each turn decides the next tool calls). */

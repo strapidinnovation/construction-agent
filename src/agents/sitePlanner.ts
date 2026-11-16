@@ -147,6 +147,12 @@ function footprint(t: ModelHouseType, l: SiteLimits): { widthFt: number; depthFt
   return { widthFt, depthFt: Math.ceil(area / widthFt) };
 }
 
+/** A house type with its footprint worked out again (after its size, stories or garage changed). */
+export function withFootprint(t: HouseType, lot: Lot, rules: ZoningRules): HouseType {
+  const fp = footprint(t, siteLimits(lot, rules));
+  return { ...t, footprintWidthFt: fp.widthFt, footprintDepthFt: fp.depthFt };
+}
+
 const SYSTEM = `You are a residential development planner. Given a piece of land and its zoning
 limits, decide what to build to get the most value for the owner.
 

@@ -101,7 +101,7 @@ export function recentHistory(session: Session): LastAnswer[] {
 export type SavedJob = {
   /** The queue job's id (see queue.ts). */
   id: string;
-  kind: "design" | "estimate" | "timeline" | "feasibility" | "interior";
+  kind: "design" | "estimate" | "timeline" | "feasibility" | "interior" | "revision";
   /** Who asked. */
   user: string;
   /**
