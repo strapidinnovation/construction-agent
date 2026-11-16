@@ -13,8 +13,6 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.322",
-    "@slack/bolt": "^5.1.0",
-    "@slack/types": "^3.3.0",
     "express": "^5.3.0",
     "ollama": "^0.6.4",
     "three": "^0.187.0",

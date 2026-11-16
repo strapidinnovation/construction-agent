@@ -7,7 +7,7 @@
  *
  * The report needs a cost estimate. If the plan doesn't have one yet, this
  * skill runs the estimate first (about 10 minutes) and then the report, so a
- * single request gives the whole picture. It also makes the PDF for Slack.
+ * single request gives the whole picture. It also makes the PDF for the chat.
  */
 import { existsSync } from "node:fs";
 import * as feasibility from "../../agents/feasibility.ts";
@@ -18,7 +18,7 @@ import { estimateCost, type EstimateResult } from "./estimate.ts";
 export type FeasibilityResult = {
   feasibility: feasibility.Feasibility;
   pdfPath: string;
-  /** Set when the cost estimate had to be made first, so Slack can share it too. */
+  /** Set when the cost estimate had to be made first, so the chat can share it too. */
   estimate?: EstimateResult;
   seconds: number;
 };

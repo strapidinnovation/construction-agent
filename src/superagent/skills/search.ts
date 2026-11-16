@@ -2,8 +2,8 @@
  * Skill: land search.
  *
  * A "skill" is one job SuperAgent knows how to do. Skills do not know anything
- * about Slack: they take plain values and return plain results, so the same
- * code could also be used by a future web app.
+ * about the chat: they take plain values and return plain results, so the
+ * agent, the buttons and test scripts can all use the same code.
  *
  * This skill wraps the existing land search agent (src/agents/landSearch.ts),
  * which calls the Python "homeharvest" scraper for Realtor.com land listings.

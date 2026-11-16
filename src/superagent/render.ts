@@ -1,10 +1,9 @@
 /**
- * Turns plan files into things Slack can show.
+ * Turns plan files into things the chat can show.
  *
- * Slack cannot display our HTML reports or SVG drawings inside a message, so
- * for each design we make:
+ * For each design we make:
  *   - plan.pdf: the full plan page (drawing + notes), for downloading/printing.
- *   - plan.png: a picture of the drawing, which Slack previews right in the thread.
+ *   - plan.png: a picture of the drawing, which the chat previews in the message.
  *
  * Both are produced by Google Chrome running "headless" (no window). Chrome
  * already knows how to render HTML/SVG perfectly, and it has built-in

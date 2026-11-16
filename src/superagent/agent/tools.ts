@@ -7,10 +7,10 @@
  *   - an input schema (zod), which the Agent SDK sends to the model. Every call
  *     is checked against it in code; a bad call gets a clear error back, so the
  *     model can correct itself instead of the bot crashing,
- *   - `label`: the line shown in the Slack checklist while it runs,
+ *   - `label`: the line shown in the chat's checklist while it runs,
  *   - `run`: does the work and returns a SHORT result for the model. Short
  *     matters: a small model gets confused by long reports, so tools return
- *     the key facts and post the full reports/files to Slack themselves.
+ *     the key facts and post the full reports/files to the chat themselves.
  *
  * Two kinds of tools:
  *   - Quick tools (search, site checks, saved plans, comparisons, projects,
@@ -29,11 +29,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { z } from "zod";
+import type { Estimate } from "../../agents/costEstimator.ts";
 import type { Feasibility } from "../../agents/feasibility.ts";
 import type { Listing } from "../../agents/landSearch.ts";
 import { runSiteChecks, type Flag, type SiteChecks } from "../../agents/siteChecks.ts";
 import { HOUSING_TYPE_LABEL, STRATEGY_LABEL, type SiteStrategy } from "../../agents/sitePlanner.ts";
 import { researchSiteRules } from "../../agents/siteRules.ts";
+import type { Timeline } from "../../agents/timelinePlanner.ts";
 import { usd } from "../../listingFormat.ts";
 import { bestMatch } from "../match.ts";
 import { findPlanByName, listingOfPlan, savedPlans, streetOf } from "../plans.ts";
@@ -88,22 +90,33 @@ import {
 } from "../../payments.ts";
 import {
   DOCUMENT_KINDS,
+  foldersFor,
   OUTPUT_DIR,
   projectDocuments,
   type ProjectDocument,
 } from "../../projectDocuments.ts";
-import { getSession, isWebKey, threadSummary, updateSession } from "../sessions.ts";
+import { getSession, threadSummary, updateSession } from "../sessions.ts";
 import { searchLand } from "../skills/search.ts";
+import { draftProject } from "../skills/projectFromPlan.ts";
 import {
+  applyProjectChange,
   findProject,
   listProjects,
   PROJECT_FILTERS,
+  ProjectPatch,
   STAGES,
   stageLabel,
   statusText,
   type Project,
+  type ProjectChange,
 } from "../skills/projects.ts";
-import { listingsReply, MAX_LISTINGS, missingSearchInfo, street } from "../slackUi.ts";
+import {
+  listingsReply,
+  MAX_LISTINGS,
+  missingSearchInfo,
+  projectDraftText,
+  street,
+} from "../replies.ts";
 import {
   queueDesign,
   queueEstimate,
@@ -120,7 +133,7 @@ import {
   questionReply,
   type ComparisonRow,
   type PlanLine,
-} from "./missionUi.ts";
+} from "./missionReplies.ts";
 import { activeMissions, saveMission, type JobCounts, type Mission } from "./missions.ts";
 
 /** At most this many house designs in one approved plan (each takes ~7 minutes). */
@@ -162,10 +175,6 @@ export type AgentTool = {
   params: z.ZodObject;
   /** The kind of queued job this tool runs, for slow tools. */
   slow?: JobKind;
-  /** Control tools need a person to answer, so scheduled (unattended) missions can't use them. */
-  needsUser?: boolean;
-  /** Only offered in web chats (src/web/), not in Slack. */
-  webOnly?: boolean;
   label: (args: unknown) => string;
   run: (args: unknown, env: ToolEnv) => Promise<ToolOutcome>;
 };
@@ -182,8 +191,6 @@ function defineTool<S extends z.ZodObject>(def: {
   description: string;
   params: S;
   slow?: JobKind;
-  needsUser?: boolean;
-  webOnly?: boolean;
   label: (args: z.infer<S>) => string;
   run: (args: z.infer<S>, env: ToolEnv) => Promise<ToolOutcome>;
 }): AgentTool {
@@ -192,8 +199,6 @@ function defineTool<S extends z.ZodObject>(def: {
     description: def.description,
     params: def.params,
     slow: def.slow,
-    needsUser: def.needsUser,
-    webOnly: def.webOnly,
     label: (args) => {
       const parsed = def.params.safeParse(args ?? {});
       return parsed.success ? def.label(parsed.data) : def.name;
@@ -259,8 +264,6 @@ function findListing(env: ToolEnv, name: string): { listing: Listing } | { error
  * exactly one slow action ("design a house on Corral Ln") is its own approval.
  */
 function budgetProblem(m: Mission, kind: JobKind): string | null {
-  if (m.unattended)
-    return "Slow tools can't run in a scheduled report. Answer with what the quick tools found.";
   if ((m.approved[kind] ?? 0) - (m.used[kind] ?? 0) > 0) return null;
   if (!m.directStep && !Object.keys(m.approved).length) {
     m.directStep = true;
@@ -275,7 +278,7 @@ const AGENT_JOB: QueueOpts = { persist: false, remember: false };
 
 /**
  * Run one slow job for the mission: check the budget, queue it (with its own
- * Slack status message, so it doesn't overwrite the mission's checklist),
+ * status message, so it doesn't overwrite the mission's checklist),
  * wait for it, and summarize the result for the model.
  */
 async function runSlow<R>(
@@ -650,7 +653,7 @@ const comparePlansTool = defineTool({
 const conversationStatusTool = defineTool({
   name: "conversation_status",
   description:
-    "What has happened in this Slack conversation and what is running right now: the last land search and listings shown, the selected lot and latest plan, slow jobs waiting or running, and other tasks you are working on here.",
+    "What has happened in this conversation and what is running right now: the last land search and listings shown, the selected lot and latest plan, slow jobs waiting or running, and other tasks you are working on here.",
   params: z.object({}),
   label: () => "Checking this conversation",
   async run(_a, { ctx, mission }) {
@@ -779,7 +782,7 @@ const documentBrief = (d: ProjectDocument) => ({
 const listProjectDocumentsTool = defineTool({
   name: "list_project_documents",
   description:
-    "List the PDFs made for a construction project (site and floor plans, cost estimates, timelines, feasibility reports, interior views), newest first. Use share_project_documents to post them.",
+    "List the PDFs made for a construction project (site and floor plans, cost estimates, timelines, feasibility reports, interior views), newest first. Use share_project_documents to post them, and read_report to answer questions about what is in them.",
   params: z.object({ project: z.string().describe("Project name") }),
   label: (a) => `Listing documents for ${a.project}`,
   async run(a) {
@@ -831,7 +834,7 @@ const shareProjectDocumentsTool = defineTool({
         path: join(OUTPUT_DIR, d.path),
         title: `${d.title} (${d.createdAt.slice(0, 10)})`,
       })),
-      `Documents for *${name}*`,
+      `Documents for **${name}**`,
     );
     return {
       result: { shared: picked.map(documentBrief), note: "The user can see and open these now." },
@@ -841,7 +844,378 @@ const shareProjectDocumentsTool = defineTool({
 });
 
 // ---------------------------------------------------------------------------
-// Vendors (web chat only). Reading is quick. A change is never made by the
+// Reading inside the reports: the JSON each job saves next to its PDF, so the
+// answers use exact numbers. One section at a time keeps results short.
+// ---------------------------------------------------------------------------
+
+const REPORTS = ["plan", "estimate", "timeline", "feasibility"] as const;
+type ReportKind = (typeof REPORTS)[number];
+const REPORT_FILE: Record<ReportKind, string> = {
+  plan: "strategy.json",
+  estimate: "estimate.json",
+  timeline: "timeline.json",
+  feasibility: "feasibility.json",
+};
+const REPORT_SECTIONS = ["overview", "trade", "tasks", "comps"] as const;
+const SECTIONS_OF: Record<ReportKind, (typeof REPORT_SECTIONS)[number][]> = {
+  plan: ["overview"],
+  estimate: ["overview", "trade"],
+  timeline: ["overview", "tasks"],
+  feasibility: ["overview", "comps"],
+};
+const MAX_REPORT_ROWS = 40;
+
+/** Money to whole dollars and ratios to 3 decimals, so the model reads clean numbers. */
+function tidy(v: unknown): unknown {
+  if (typeof v === "number")
+    return Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 1000) / 1000;
+  if (Array.isArray(v)) return v.map(tidy);
+  if (v && typeof v === "object")
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, tidy(x)]));
+  return v;
+}
+
+/** Whether `text` contains every word of `query` ("roof shingles" matches "Roofing: asphalt shingles"). */
+function matches(text: string, query: string): boolean {
+  const have = text.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 1)
+    .every((w) => have.includes(w.replace(/(ing|s)$/, "")));
+}
+
+/**
+ * The newest folder with this report for a project or designed property. A
+ * project is tried first; if it has no such report, a designed property of
+ * that name is.
+ */
+function reportFolder(
+  name: string,
+  report: ReportKind,
+): { dir: string; subject: string } | { error: string } {
+  const candidates: { address: string; subject: string }[] = [];
+  const problems: string[] = [];
+  const project = findProject(name);
+  if (project.kind === "found")
+    candidates.push({
+      address: project.project.data.site.address,
+      subject: project.project.data.name,
+    });
+  else if (project.kind === "ambiguous")
+    problems.push(`projects ${project.options.map((p) => p.data.name).join(" and ")}`);
+  const plan = findPlanByName(name);
+  if (plan.kind === "found")
+    candidates.push({
+      address: plan.item.listing.address,
+      subject: streetOf(plan.item.listing.address),
+    });
+  else if (plan.kind === "ambiguous")
+    problems.push(`properties ${plan.items.map((p) => streetOf(p.listing.address)).join(" and ")}`);
+  for (const c of candidates) {
+    const dir = foldersFor(c.address).find((d) => existsSync(join(d, REPORT_FILE[report])));
+    if (dir) return { dir, subject: c.subject };
+  }
+  if (candidates.length)
+    return {
+      error: `${candidates.map((c) => c.subject).join(" / ")} has no ${report} report yet. You can make one (it is a slow job).`,
+    };
+  if (problems.length)
+    return { error: `"${name}" matches ${problems.join("; ")}. Use the full name.` };
+  return {
+    error: `No project or designed property called "${name}". Use list_projects or list_saved_plans.`,
+  };
+}
+
+function planOverview(dir: string) {
+  const s = readJson<SiteStrategy>(join(dir, "strategy.json"))!;
+  const inputs = readJson<{ lot?: unknown; rules?: Record<string, unknown> }>(
+    join(dir, "inputs.json"),
+  );
+  const r = inputs?.rules ?? {};
+  return {
+    strategy: STRATEGY_LABEL[s.strategy],
+    homes: s.homes,
+    layout: s.layout,
+    reasoning: s.reasoning,
+    houseTypes: s.houseTypes,
+    approvalsNeeded: s.approvals,
+    lot: inputs?.lot ?? null,
+    zoning: Object.fromEntries(
+      [
+        "jurisdiction",
+        "district",
+        "districtName",
+        "minLotSqft",
+        "maxUnits",
+        "maxHeightFt",
+        "frontFt",
+        "streetSideFt",
+        "interiorSideFt",
+        "rearFt",
+        "maxBuildingCoverage",
+        "maxImperviousCover",
+        "notes",
+      ]
+        .filter((k) => r[k] !== undefined)
+        .map((k) => [k, r[k]]),
+    ),
+  };
+}
+
+function estimateOverview(e: Estimate) {
+  const byTrade = new Map<string, { materialsUsd: number; laborUsd: number }>();
+  for (const h of e.houses)
+    for (const t of h.trades) {
+      const sum = byTrade.get(t.name) ?? { materialsUsd: 0, laborUsd: 0 };
+      sum.materialsUsd += t.materialsUsd * h.count;
+      sum.laborUsd += t.laborUsd * h.count;
+      byTrade.set(t.name, sum);
+    }
+  return {
+    location: e.location,
+    homes: e.homes,
+    heatedSqft: e.heatedSqft,
+    totalUsd: e.totalUsd,
+    costPerSqftUsd: e.totalUsd / Math.max(1, e.heatedSqft),
+    materialsUsd: e.materialsUsd,
+    laborUsd: e.laborUsd,
+    contingencyUsd: e.contingencyUsd,
+    houseTypes: e.houses.map((h) => ({
+      type: h.type,
+      name: h.name,
+      count: h.count,
+      perHomeUsd: h.materialsUsd + h.laborUsd,
+      heatedSqft: h.spec.heatedSqft,
+      stories: h.spec.stories,
+      bedrooms: h.spec.bedrooms,
+      bathrooms: h.spec.bathrooms,
+      roof: `${h.spec.roofType}, ${h.spec.roofPitch}, ${h.spec.roofAreaSqft} sq ft`,
+      notEstimated: h.failedTrades,
+    })),
+    tradesForAllHomes: [...byTrade]
+      .map(([trade, t]) => ({ trade, ...t, totalUsd: t.materialsUsd + t.laborUsd }))
+      .sort((a, b) => b.totalUsd - a.totalUsd),
+    note: 'Trade totals are before the contingency. Use section "trade" with match for a trade\'s line items.',
+  };
+}
+
+function estimateTrade(e: Estimate, match: string) {
+  const trades = e.houses.flatMap((h) =>
+    h.trades
+      .filter((t) => matches(t.name, match))
+      .map((t) => ({
+        houseType: e.houses.length > 1 ? `${h.type} "${h.name}" x${h.count}` : undefined,
+        trade: t.name,
+        perHome: { materialsUsd: t.materialsUsd, laborUsd: t.laborUsd },
+        materials: t.materials.slice(0, MAX_REPORT_ROWS),
+        labor: t.labor.slice(0, MAX_REPORT_ROWS),
+      })),
+  );
+  if (trades.length) return { trades };
+  // No trade of that name: look for the item in every trade's lines instead.
+  const lines = e.houses.flatMap((h) =>
+    h.trades.flatMap((t) => [
+      ...t.materials
+        .filter((m) => matches(`${m.item} ${m.specification}`, match))
+        .map((m) => ({ trade: t.name, ...m })),
+      ...t.labor.filter((l) => matches(l.task, match)).map((l) => ({ trade: t.name, ...l })),
+    ]),
+  );
+  return lines.length
+    ? { matchingLines: lines.slice(0, MAX_REPORT_ROWS), note: "Amounts are per home." }
+    : {
+        error: `No trade or line matches "${match}". Trades: ${[...new Set(e.houses.flatMap((h) => h.trades.map((t) => t.name)))].join("; ")}.`,
+      };
+}
+
+function timelineOverview(t: Timeline) {
+  const phases = new Map<string, { start: string; end: string; tasks: number }>();
+  for (const x of t.tasks) {
+    const p = phases.get(x.phase);
+    phases.set(x.phase, {
+      start: !p || x.start < p.start ? x.start : p.start,
+      end: !p || x.end > p.end ? x.end : p.end,
+      tasks: (p?.tasks ?? 0) + 1,
+    });
+  }
+  const byDate = (kind: string) =>
+    t.tasks
+      .filter((x) => x.kind === kind)
+      .sort((a, b) => a.end.localeCompare(b.end))
+      .map((x) => ({ date: x.end, name: x.name, phase: x.phase }));
+  return {
+    location: t.location,
+    homes: t.homes,
+    start: t.startDate,
+    finish: t.finishDate,
+    workdays: t.workdays,
+    calendarWeeks: t.calendarWeeks,
+    phases: [...phases].map(([phase, p]) => ({ phase, ...p })),
+    milestones: byDate("milestone").slice(0, MAX_REPORT_ROWS),
+    inspections: byDate("inspection").slice(0, MAX_REPORT_ROWS),
+    waits: byDate("wait").slice(0, 15),
+    tasksOnCriticalPath: t.tasks.filter((x) => x.critical && x.workdays > 0).length,
+    risks: t.risks,
+    assumptions: t.assumptions,
+    note: 'Use section "tasks" (with match, from, to) for individual tasks.',
+  };
+}
+
+function timelineTasks(t: Timeline, a: { match?: string; from?: string; to?: string }) {
+  const tasks = t.tasks
+    .filter((x) => !a.match || matches(`${x.phase} ${x.name} ${x.crew} ${x.kind}`, a.match))
+    .filter((x) => (!a.from || x.end >= a.from) && (!a.to || x.start <= a.to))
+    .sort((x, y) => x.start.localeCompare(y.start));
+  return {
+    found: tasks.length,
+    tasks: tasks.slice(0, MAX_REPORT_ROWS).map((x) => ({
+      id: x.id,
+      phase: x.phase,
+      name: x.name,
+      kind: x.kind,
+      start: x.start,
+      end: x.end,
+      workdays: x.workdays,
+      crew: x.crew,
+      critical: x.critical,
+      dependsOn: x.dependsOn,
+      ...(x.notes ? { notes: x.notes } : {}),
+    })),
+    ...(tasks.length > MAX_REPORT_ROWS
+      ? { note: `Only the first ${MAX_REPORT_ROWS}; narrow it down.` }
+      : {}),
+  };
+}
+
+function feasibilityOverview(f: Feasibility) {
+  return {
+    property: f.listing.address,
+    landPriceUsd: f.listing.priceUsd,
+    recommendation: f.recommendation,
+    summary: f.summary,
+    homes: f.homes,
+    totalSqft: f.totalSqft,
+    buildMonths: f.buildMonths,
+    costs: f.costs,
+    costToBuildUsd: f.costToBuild,
+    constructionLoanUsd: f.constructionLoan,
+    sell: f.sell,
+    rent: f.rent,
+    valuePerHome: f.houses.map((h) => ({
+      type: h.type,
+      name: h.name,
+      count: h.count,
+      saleValueUsd: h.valuePerHome,
+      monthlyRentUsd: h.rentPerHome,
+      saleComps: h.sale.comps.length,
+      salePerSqftUsd: h.sale.medianPerSqft,
+    })),
+    site: f.site,
+    risks: f.risks,
+    nextSteps: f.nextSteps,
+    lowConfidence: f.lowConfidence ? f.confidenceNotes : false,
+    note: 'Sold comparables use last asking prices (Texas does not disclose sale prices). Use section "comps" for the comparable homes.',
+  };
+}
+
+function feasibilityComps(f: Feasibility) {
+  const brief = (c: Feasibility["houses"][number]["sale"]["comps"][number]) => ({
+    address: c.address,
+    price: c.price,
+    priceKind: c.priceKind,
+    sqft: c.sqft,
+    beds: c.beds,
+    yearBuilt: c.yearBuilt,
+    date: c.date,
+  });
+  return {
+    houseTypes: f.houses.map((h) => ({
+      type: h.type,
+      name: h.name,
+      sale: {
+        radiusMiles: h.sale.radiusMiles,
+        medianPerSqftUsd: h.sale.medianPerSqft,
+        comps: h.sale.comps.slice(0, 20).map(brief),
+      },
+      rent: h.rent
+        ? {
+            radiusMiles: h.rent.radiusMiles,
+            medianPerSqftUsd: h.rent.medianPerSqft,
+            comps: h.rent.comps.slice(0, 20).map(brief),
+          }
+        : null,
+    })),
+  };
+}
+
+const readReportTool = defineTool({
+  name: "read_report",
+  description:
+    "Read inside a report made for a project or designed property, to answer questions about its contents: the house plan (layout, house types, zoning rules, approvals), cost estimate (trade totals; a trade's materials and labor line items), timeline (phases, milestones, inspections, risks; individual tasks by name or date) or feasibility report (costs, sale and rent numbers, what-ifs, site checks, risks, next steps; comparable homes). Exact numbers from the saved report. Read only the section you need.",
+  params: z.object({
+    name: z
+      .string()
+      .describe(
+        'A project name or a designed property\'s street, e.g. "River Bend" or "8446 Corral Ln"',
+      ),
+    report: z.enum(REPORTS),
+    section: z
+      .enum(REPORT_SECTIONS)
+      .optional()
+      .describe(
+        'Default "overview". estimate: "trade" (needs match: a trade or item, e.g. "roofing", "windows"). timeline: "tasks" (match and/or from, to). feasibility: "comps" (comparable homes).',
+      ),
+    match: z.string().optional().describe("Words to look for (trade, item, task or phase)"),
+    from: z
+      .string()
+      .optional()
+      .describe("timeline tasks: only those running on or after YYYY-MM-DD"),
+    to: z
+      .string()
+      .optional()
+      .describe("timeline tasks: only those running on or before YYYY-MM-DD"),
+  }),
+  label: (a) => `Reading the ${a.report} for ${a.name}`,
+  async run(a) {
+    const section = a.section ?? "overview";
+    if (!SECTIONS_OF[a.report].includes(section))
+      return fail(`The ${a.report} report has sections: ${SECTIONS_OF[a.report].join(", ")}.`);
+    if (section === "trade" && !a.match)
+      return fail('Section "trade" needs match, e.g. "roofing".');
+    const found = reportFolder(a.name, a.report);
+    if ("error" in found) return fail(found.error);
+    const file = join(found.dir, REPORT_FILE[a.report]);
+    const made = basename(found.dir).slice(0, 10);
+    let content: unknown;
+    if (a.report === "plan") content = planOverview(found.dir);
+    else if (a.report === "estimate") {
+      const e = readJson<Estimate>(file)!;
+      content = section === "trade" ? estimateTrade(e, a.match!) : estimateOverview(e);
+    } else if (a.report === "timeline") {
+      const t = readJson<Timeline>(file)!;
+      content = section === "tasks" ? timelineTasks(t, a) : timelineOverview(t);
+    } else {
+      const f = readJson<Feasibility>(file)!;
+      content = section === "comps" ? feasibilityComps(f) : feasibilityOverview(f);
+    }
+    if (content && typeof content === "object" && "error" in content)
+      return fail(String((content as { error: string }).error));
+    return {
+      result: tidy({
+        subject: found.subject,
+        report: a.report,
+        made,
+        section,
+        ...(content as object),
+      }),
+      done: `Read the ${a.report} for ${found.subject}${section === "overview" ? "" : ` (${a.match ?? section})`}`,
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Vendors. Reading is quick. A change is never made by the
 // tool: it shows the change with Yes / No buttons and pauses, and code makes
 // it only when the user says yes (settlePendingChange, called from agent.ts).
 // ---------------------------------------------------------------------------
@@ -957,7 +1331,7 @@ async function askToConfirm(
 }
 
 /**
- * The user answered a vendor, order or payment change: make it if they said
+ * The user answered a vendor, order, payment or project change: make it if they said
  * yes, else drop it. Returns the message for the model and the checklist line.
  */
 export async function settlePendingChange(
@@ -978,6 +1352,13 @@ export async function settlePendingChange(
   const saved = (detail: unknown) =>
     change.action === "delete" ? "" : ` Saved: ${JSON.stringify(detail)}`;
   try {
+    if ("entity" in change && change.entity === "project") {
+      const p = await applyProjectChange(change);
+      return {
+        prompt: `The user confirmed. Project ${p.data.name} was ${did}. Saved: ${JSON.stringify({ project: p.data.name, id: p.data.id, status: statusText(p.status), client: p.data.client, team: p.data.team, contractUsd: p.data.budget.contractUsd })}. The user can open it as [${p.data.name}](/projects/${p.data.id}); its plan and reports are on its Documents tab.`,
+        step: `Project ${did}: ${p.data.name}`,
+      };
+    }
     if ("entity" in change && change.entity === "payment") {
       const p = await applyPaymentChange(change);
       return {
@@ -1008,7 +1389,6 @@ export async function settlePendingChange(
 
 const listVendorsTool = defineTool({
   name: "list_vendors",
-  webOnly: true,
   description:
     "List the builder's vendors (subcontractors, suppliers, consultants) with trade, the construction stages they can work on, status, rating, insurance expiry and contact. Filter by type, status, stage or text.",
   params: z.object({
@@ -1030,7 +1410,6 @@ const listVendorsTool = defineTool({
 
 const vendorDetailsTool = defineTool({
   name: "vendor_details",
-  webOnly: true,
   description:
     "Everything about one vendor: trade, stages, contact, service area, license, insurance expiry, rating, status and notes.",
   params: z.object({ vendor: z.string().describe('Vendor name, e.g. "Capitol Concrete"') }),
@@ -1048,8 +1427,6 @@ const vendorDetailsTool = defineTool({
 
 const createVendorTool = defineTool({
   name: "create_vendor",
-  webOnly: true,
-  needsUser: true,
   description:
     "Add a new vendor. Needs name, type, trade and at least one stage (ask_user for any that are missing). The user is shown the vendor and must confirm before it is saved.",
   params: z.object({
@@ -1074,10 +1451,10 @@ const createVendorTool = defineTool({
       return fail(`A vendor named "${taken.name}" already exists. Use update_vendor to change it.`);
     const details = flatEntries(vendorShape(a))
       .filter(([k]) => !["name", "type", "trade", "stages"].includes(k))
-      .map(([k, v]) => `• ${FIELD_LABEL[k] ?? k}: ${show(k, v)}`);
+      .map(([k, v]) => `- ${FIELD_LABEL[k] ?? k}: ${show(k, v)}`);
     const text = [
-      `Add a new vendor: *${input.name}* (${input.type}, ${input.trade})`,
-      `• Stages: ${show("stages", input.stages)}`,
+      `Add a new vendor: **${input.name}** (${input.type}, ${input.trade})`,
+      `- Stages: ${show("stages", input.stages)}`,
       ...details,
     ].join("\n");
     return askToConfirm(env, { action: "create", input }, text, `Asked to add ${input.name}`);
@@ -1086,8 +1463,6 @@ const createVendorTool = defineTool({
 
 const updateVendorTool = defineTool({
   name: "update_vendor",
-  webOnly: true,
-  needsUser: true,
   description:
     "Change an existing vendor: give only the fields to change (null clears an optional field). The user is shown the changes and must confirm before they are saved.",
   params: z.object({
@@ -1112,9 +1487,9 @@ const updateVendorTool = defineTool({
     );
     if (!changes.length) return fail(`Nothing would change: ${v.name} already has those values.`);
     const text = [
-      `Change *${v.name}*:`,
+      `Change **${v.name}**:`,
       ...changes.map(
-        ([k, next]) => `• ${FIELD_LABEL[k] ?? k}: ${show(k, current[k])} → ${show(k, next)}`,
+        ([k, next]) => `- ${FIELD_LABEL[k] ?? k}: ${show(k, current[k])} → ${show(k, next)}`,
       ),
     ].join("\n");
     return askToConfirm(
@@ -1128,8 +1503,6 @@ const updateVendorTool = defineTool({
 
 const deleteVendorTool = defineTool({
   name: "delete_vendor",
-  webOnly: true,
-  needsUser: true,
   description:
     'Delete a vendor. The user must confirm first. Prefer update_vendor with status "inactive" when the user only wants to stop using them.',
   params: z.object({ vendor: z.string().describe("The vendor's name") }),
@@ -1143,7 +1516,7 @@ const deleteVendorTool = defineTool({
     return askToConfirm(
       env,
       { action: "delete", id: v.id },
-      `Delete *${v.name}* (${v.trade})? This can't be undone.`,
+      `Delete **${v.name}** (${v.trade})? This can't be undone.`,
       `Asked to delete ${v.name}`,
     );
   },
@@ -1154,7 +1527,7 @@ const deleteVendorTool = defineTool({
 // Same rules as vendors: reading is quick, changes are confirmed first.
 // ---------------------------------------------------------------------------
 
-type PendingChange = VendorChange | OrderChange | PaymentChange;
+type PendingChange = VendorChange | OrderChange | PaymentChange | ProjectChange;
 
 function projectOr(query: string): { project: Project } | { error: string } {
   const found = findProject(query);
@@ -1213,7 +1586,6 @@ const itemLine = (i: OrderItem) =>
 
 const listOrdersTool = defineTool({
   name: "list_orders",
-  webOnly: true,
   description:
     "List orders (what the builder ordered from a vendor for a project) with status, total, needed-by date and whether they are overdue. Filter by project, vendor, status or text; openOnly leaves out fulfilled and cancelled ones.",
   params: z.object({
@@ -1251,7 +1623,6 @@ const listOrdersTool = defineTool({
 
 const orderDetailsTool = defineTool({
   name: "order_details",
-  webOnly: true,
   description:
     "Everything about one order: line items, total, status history, notes, and which statuses it can move to.",
   params: z.object({ order: z.string().describe('Order number, e.g. "PO-1012"') }),
@@ -1265,8 +1636,6 @@ const orderDetailsTool = defineTool({
 
 const createOrderTool = defineTool({
   name: "create_order",
-  webOnly: true,
-  needsUser: true,
   description:
     'Create an order from a project to a vendor. Needs the project, vendor, a title and at least one line item with quantity, unit and unit price (ask_user for any that are missing; never guess prices). It starts as "created". The user is shown the order and must confirm before it is saved.',
   params: z.object({
@@ -1301,12 +1670,12 @@ const createOrderTool = defineTool({
       return fail(err instanceof Error ? err.message : String(err));
     }
     const text = [
-      `New order for *${project.project.data.name}* from *${vendor.vendor.name}*: ${input.title}`,
-      ...input.items.map((i) => `• ${itemLine(i)}`),
-      `• *Total: ${usd(orderTotal(input.items))}*`,
-      ...(input.stage ? [`• Stage: ${stageLabel(input.stage)}`] : []),
-      ...(input.neededBy ? [`• Needed by: ${input.neededBy}`] : []),
-      ...(input.notes ? [`• Notes: ${input.notes}`] : []),
+      `New order for **${project.project.data.name}** from **${vendor.vendor.name}**: ${input.title}`,
+      ...input.items.map((i) => `- ${itemLine(i)}`),
+      `- **Total: ${usd(orderTotal(input.items))}**`,
+      ...(input.stage ? [`- Stage: ${stageLabel(input.stage)}`] : []),
+      ...(input.neededBy ? [`- Needed by: ${input.neededBy}`] : []),
+      ...(input.notes ? [`- Notes: ${input.notes}`] : []),
     ].join("\n");
     return askToConfirm(
       env,
@@ -1319,8 +1688,6 @@ const createOrderTool = defineTool({
 
 const updateOrderTool = defineTool({
   name: "update_order",
-  webOnly: true,
-  needsUser: true,
   description:
     "Change an order: its status (forward only: created, sent, confirmed, fulfilled; or cancelled until fulfilled), title, stage, needed-by date, notes, or its line items (items replaces all of them). Give only what changes; null clears stage or neededBy. Fulfilled and cancelled orders can only change notes. The user is shown the change and must confirm before it is saved.",
   params: z.object({
@@ -1358,15 +1725,15 @@ const updateOrderTool = defineTool({
     const lines = Object.entries(patch).flatMap(([k, v]) =>
       k === "items"
         ? [
-            `• Items (total ${usd(orderTotal(o.items))} → ${usd(orderTotal(v as OrderItem[]))}):`,
+            `- Items (total ${usd(orderTotal(o.items))} → ${usd(orderTotal(v as OrderItem[]))}):`,
             ...(v as OrderItem[]).map((i) => `   ${itemLine(i)}`),
           ]
-        : [`• ${ORDER_FIELD_LABEL[k] ?? k}: ${show(k, o[k as keyof typeof o])} → ${show(k, v)}`],
+        : [`- ${ORDER_FIELD_LABEL[k] ?? k}: ${show(k, o[k as keyof typeof o])} → ${show(k, v)}`],
     );
     return askToConfirm(
       env,
       { entity: "order", action: "update", id: o.id, patch },
-      [`Change order *${o.id}* (${o.title}):`, ...lines].join("\n"),
+      [`Change order **${o.id}** (${o.title}):`, ...lines].join("\n"),
       `Asked to update ${o.id}`,
     );
   },
@@ -1374,8 +1741,6 @@ const updateOrderTool = defineTool({
 
 const deleteOrderTool = defineTool({
   name: "delete_order",
-  webOnly: true,
-  needsUser: true,
   description:
     'Delete an order that was never sent (status "created"). Once sent, use update_order with status "cancelled" instead. The user must confirm first.',
   params: z.object({ order: z.string().describe('Order number, e.g. "PO-1012"') }),
@@ -1392,7 +1757,7 @@ const deleteOrderTool = defineTool({
     return askToConfirm(
       env,
       { entity: "order", action: "delete", id: o.id },
-      `Delete order *${o.id}* (${o.title}, ${usd(view.totalUsd)} from ${view.vendor?.name ?? o.vendorId})? This can't be undone.`,
+      `Delete order **${o.id}** (${o.title}, ${usd(view.totalUsd)} from ${view.vendor?.name ?? o.vendorId})? This can't be undone.`,
       `Asked to delete ${o.id}`,
     );
   },
@@ -1463,7 +1828,6 @@ const showPaymentField = (k: string, v: unknown) =>
 
 const listPaymentsTool = defineTool({
   name: "list_payments",
-  webOnly: true,
   description:
     'Client collections (money the client pays the builder: deposit, milestone draws, change orders) and vendor payments (money the builder pays vendors), each with an amount, a proposed date and, once paid, an actual date. State is "pending" (not due yet), "overdue" (pending past its proposed date) or "completed". Returns pending, overdue and completed totals for each kind and the net cash (collected minus paid), plus the matching records, overdue first. Filter by project, vendor, kind, state or text.',
   params: z.object({
@@ -1504,8 +1868,6 @@ const listPaymentsTool = defineTool({
 
 const createPaymentTool = defineTool({
   name: "create_payment",
-  webOnly: true,
-  needsUser: true,
   description:
     'Add a client collection (kind "collection": money due from the project\'s client) or a vendor payment (kind "vendor-payment": needs the vendor, or one of its orders on this project). Needs the project, a title, the amount and the proposed date (ask_user for any that are missing; never guess amounts). To record something already paid, give status "completed" and the actual date (today if left out). The user is shown the record and must confirm before it is saved.',
   params: z.object({
@@ -1550,17 +1912,17 @@ const createPaymentTool = defineTool({
     const who =
       input.kind === "collection"
         ? `from ${project.project.data.client}`
-        : `to *${listVendors().find((v) => v.id === input.vendorId)?.name ?? input.vendorId}*`;
+        : `to **${listVendors().find((v) => v.id === input.vendorId)?.name ?? input.vendorId}**`;
     const text = [
-      `New ${KIND_LABEL[input.kind]} for *${project.project.data.name}* ${who}: ${input.title}`,
-      `• *Amount: ${usd(input.amountUsd)}*`,
-      `• Proposed date: ${input.proposedDate}`,
+      `New ${KIND_LABEL[input.kind]} for **${project.project.data.name}** ${who}: ${input.title}`,
+      `- **Amount: ${usd(input.amountUsd)}**`,
+      `- Proposed date: ${input.proposedDate}`,
       ...(input.status === "completed"
-        ? [`• Paid on: ${input.actualDate ?? `${new Date().toISOString().slice(0, 10)} (today)`}`]
+        ? [`- Paid on: ${input.actualDate ?? `${new Date().toISOString().slice(0, 10)} (today)`}`]
         : []),
-      ...(input.orderId ? [`• For order: ${input.orderId}`] : []),
-      ...(input.stage ? [`• Stage: ${stageLabel(input.stage)}`] : []),
-      ...(input.notes ? [`• Notes: ${input.notes}`] : []),
+      ...(input.orderId ? [`- For order: ${input.orderId}`] : []),
+      ...(input.stage ? [`- Stage: ${stageLabel(input.stage)}`] : []),
+      ...(input.notes ? [`- Notes: ${input.notes}`] : []),
     ].join("\n");
     return askToConfirm(
       env,
@@ -1573,8 +1935,6 @@ const createPaymentTool = defineTool({
 
 const updatePaymentTool = defineTool({
   name: "update_payment",
-  webOnly: true,
-  needsUser: true,
   description:
     'Change a payment. To record that it was paid (or received), set status "completed" and the actualDate (today if left out); status "pending" puts it back (e.g. a bounced check) and clears the actual date. Can also change the title, amount, proposed date (reschedule), stage, order or notes. Give only what changes; null clears stage or order. The user is shown the change and must confirm before it is saved.',
   params: z.object({
@@ -1618,14 +1978,14 @@ const updatePaymentTool = defineTool({
       .filter((k) => k in fullPatch)
       .map(
         (k) =>
-          `• ${PAYMENT_FIELD_LABEL[k]}: ${showPaymentField(k, p[k as keyof Payment])} → ${showPaymentField(k, fullPatch[k as keyof PaymentPatch])}`,
+          `- ${PAYMENT_FIELD_LABEL[k]}: ${showPaymentField(k, p[k as keyof Payment])} → ${showPaymentField(k, fullPatch[k as keyof PaymentPatch])}`,
       );
     const view = paymentView(p);
     return askToConfirm(
       env,
       { entity: "payment", action: "update", id: p.id, patch: fullPatch },
       [
-        `Change payment *${p.id}* (${p.title}, ${usd(p.amountUsd)}, ${view.vendor ? `to ${view.vendor.name}` : "from the client"}):`,
+        `Change payment **${p.id}** (${p.title}, ${usd(p.amountUsd)}, ${view.vendor ? `to ${view.vendor.name}` : "from the client"}):`,
         ...lines,
       ].join("\n"),
       `Asked to update ${p.id}`,
@@ -1635,8 +1995,6 @@ const updatePaymentTool = defineTool({
 
 const deletePaymentTool = defineTool({
   name: "delete_payment",
-  webOnly: true,
-  needsUser: true,
   description:
     'Delete a pending payment (e.g. one added by mistake). Completed payments stay on the books: if one never happened, update_payment it back to "pending" first. The user must confirm first.',
   params: z.object({ payment: z.string().describe('Payment number, e.g. "PMT-1012"') }),
@@ -1653,8 +2011,113 @@ const deletePaymentTool = defineTool({
     return askToConfirm(
       env,
       { entity: "payment", action: "delete", id: p.id },
-      `Delete payment *${p.id}* (${p.title}, ${usd(p.amountUsd)} ${view.vendor ? `to ${view.vendor.name}` : "from the client"}, due ${p.proposedDate})? This can't be undone.`,
+      `Delete payment **${p.id}** (${p.title}, ${usd(p.amountUsd)} ${view.vendor ? `to ${view.vendor.name}` : "from the client"}, due ${p.proposedDate})? This can't be undone.`,
       `Asked to delete ${p.id}`,
+    );
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Projects from designs. Like the vendor tools, they only propose: the change
+// is saved after the user says yes.
+// ---------------------------------------------------------------------------
+
+const createProjectTool = defineTool({
+  name: "create_project",
+  description:
+    "Make a designed property a construction project, from its newest plan (with its cost estimate and timeline if made). It starts in planning, with the client and team TBD, and the plan and reports show on the project's Documents tab. Shows the project to the user with Yes / No buttons and pauses; nothing is saved before yes. If a project already exists at that address, it says which.",
+  params: z.object({
+    property: z
+      .string()
+      .describe('Street address of a property with a plan, e.g. "8446 Corral Ln"'),
+  }),
+  label: (a) => `Proposing a project for ${a.property}`,
+  async run(a, env) {
+    const match = findPlanByName(a.property);
+    if (match.kind === "ambiguous")
+      return fail(
+        `"${a.property}" matches ${match.items.map((p) => streetOf(p.listing.address)).join(" and ")}. Use the full street address.`,
+      );
+    if (match.kind !== "found")
+      return fail(
+        `No plan for "${a.property}". Design a house there first (design_house), or use list_saved_plans.`,
+      );
+    const draft = draftProject(match.item.dir);
+    if (draft.kind === "error") return fail(draft.error);
+    if (draft.kind === "exists")
+      return {
+        result: {
+          alreadyAProject: draft.project.data.name,
+          note: "Nothing to create: this property is already that project, and its plan and reports are on the project's Documents tab.",
+        },
+        done: `${draft.project.data.name} is already the project there`,
+      };
+    return askToConfirm(
+      env,
+      { entity: "project", action: "create", input: draft.project },
+      projectDraftText(draft.project, draft.from),
+      `Asked to create ${draft.project.name}`,
+    );
+  },
+});
+
+const PROJECT_FIELD_LABEL: Record<keyof ProjectPatch, string> = {
+  name: "Name",
+  client: "Client",
+  builder: "Builder",
+  projectManager: "Project manager",
+  superintendent: "Superintendent",
+  description: "Scope",
+  contractUsd: "Contract",
+};
+
+const updateProjectTool = defineTool({
+  name: "update_project",
+  description:
+    "Change a project's name, client, builder, project manager, superintendent, scope description or contract amount (e.g. filling in what was TBD). Give only the fields that change. Shows the change with Yes / No buttons and pauses; nothing is saved before yes.",
+  params: z.object({
+    project: z.string().describe("Project name"),
+    name: z.string().optional(),
+    client: z.string().optional(),
+    builder: z.string().optional(),
+    projectManager: z.string().optional(),
+    superintendent: z.string().optional(),
+    description: z.string().optional().describe("What is being built"),
+    contractUsd: z.number().optional().describe("The contract amount in dollars"),
+  }),
+  label: (a) => `Changing project ${a.project}`,
+  async run({ project, ...fields }, env) {
+    const found = projectOr(project);
+    if ("error" in found) return fail(found.error);
+    const d = found.project.data;
+    const current: Record<keyof ProjectPatch, string | number> = {
+      name: d.name,
+      client: d.client,
+      builder: d.team.builder,
+      projectManager: d.team.projectManager,
+      superintendent: d.team.superintendent,
+      description: d.scope.description,
+      contractUsd: d.budget.contractUsd,
+    };
+    const changed = (Object.keys(PROJECT_FIELD_LABEL) as (keyof ProjectPatch)[]).filter(
+      (k) => fields[k] !== undefined && fields[k] !== current[k],
+    );
+    if (!changed.length)
+      return fail("Nothing to change: give at least one field with a new value.");
+    const patch = ProjectPatch.safeParse(Object.fromEntries(changed.map((k) => [k, fields[k]])));
+    if (!patch.success) return fail(z.prettifyError(patch.error));
+    const shown = (k: keyof ProjectPatch, v: string | number) =>
+      k === "contractUsd" ? usd(Number(v)) : String(v);
+    return askToConfirm(
+      env,
+      { entity: "project", action: "update", id: d.id, patch: patch.data },
+      [
+        `Change project **${d.name}**:`,
+        ...changed.map(
+          (k) => `- ${PROJECT_FIELD_LABEL[k]}: ${shown(k, current[k])} → ${shown(k, fields[k]!)}`,
+        ),
+      ].join("\n"),
+      `Asked to change ${d.name}`,
     );
   },
 });
@@ -1891,7 +2354,6 @@ const STEP_VERB: Record<(typeof PLAN_STEP_TOOLS)[number], string> = {
 
 const proposePlanTool = defineTool({
   name: "propose_plan",
-  needsUser: true,
   description:
     "Ask the user to approve your plan before running slow tools. List every step you intend to take (slow ones especially). The mission pauses until the user clicks Go or replies with changes.",
   params: z.object({
@@ -1957,7 +2419,6 @@ const proposePlanTool = defineTool({
 
 const askUserTool = defineTool({
   name: "ask_user",
-  needsUser: true,
   description:
     "Ask the user a question when you can't continue without their input (e.g. no city or budget given). Offer up to 4 short answer options when it helps. The mission pauses until they answer.",
   params: z.object({
@@ -1991,6 +2452,9 @@ export const TOOLS: AgentTool[] = [
   projectDetailsTool,
   listProjectDocumentsTool,
   shareProjectDocumentsTool,
+  readReportTool,
+  createProjectTool,
+  updateProjectTool,
   listVendorsTool,
   vendorDetailsTool,
   createVendorTool,
@@ -2013,13 +2477,3 @@ export const TOOLS: AgentTool[] = [
   proposePlanTool,
   askUserTool,
 ];
-
-/**
- * The tools a mission may use: scheduled missions get only the quick ones,
- * and vendor tools are only for web chats.
- */
-export function toolsFor(m: Mission): AgentTool[] {
-  return TOOLS.filter(
-    (t) => (!t.webOnly || isWebKey(m.key)) && (!m.unattended || (!t.slow && !t.needsUser)),
-  );
-}

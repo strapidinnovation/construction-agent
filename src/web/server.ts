@@ -3,9 +3,11 @@
  * screens) and chat with the agent. src/main.ts starts it on HTTP_PORT.
  *
  *   GET    /health
- *   GET    /projects?filter=all|delayed|behind|attention|on-hold&completed=true
+ *   GET    /projects?filter=all|delayed|behind|attention|on-hold|planning&completed=true
  *   GET    /projects/summary
+ *   POST   /projects                     { property }  (from that property's newest plan; starts in planning)
  *   GET    /projects/:id                 (an id, or a name like "river bend")
+ *   PATCH  /projects/:id                 { name?, client?, builder?, projectManager?, superintendent?, description?, contractUsd? }
  *   GET    /projects/:id/documents       (the PDFs made for it, newest first; open them at their url)
  *   GET    /vendors?type=&status=&stage=&q=
  *   GET    /vendors/:id
@@ -53,7 +55,7 @@ import {
   MISSION_ANSWER_ACTION,
   MISSION_CANCEL_BUTTON,
   MISSION_GO_BUTTON,
-} from "../superagent/agent/missionUi.ts";
+} from "../superagent/agent/missionReplies.ts";
 import {
   createOrder,
   deleteOrder,
@@ -83,7 +85,16 @@ import {
   updatePayment,
 } from "../payments.ts";
 import { OUTPUT_DIR, projectDocuments } from "../projectDocuments.ts";
-import { PROJECT_FILTERS, STAGES } from "../superagent/skills/projects.ts";
+import { findPlanByName, streetOf } from "../superagent/plans.ts";
+import { draftProject } from "../superagent/skills/projectFromPlan.ts";
+import {
+  createProject,
+  PROJECT_FILTERS,
+  ProjectError,
+  ProjectPatch,
+  STAGES,
+  updateProject,
+} from "../superagent/skills/projects.ts";
 import {
   createVendor,
   deleteVendor,
@@ -98,16 +109,22 @@ import {
 } from "../vendors.ts";
 import {
   CANCEL_BUTTON,
+  CONFIRM_PROJECT_BUTTON,
+  CREATE_PROJECT_BUTTON,
   DESIGN_BUTTON,
   errorReply,
   ESTIMATE_BUTTON,
   FEASIBILITY_BUTTON,
   INTERIOR_BUTTON,
+  projectSkippedReply,
+  SKIP_PROJECT_BUTTON,
   TIMELINE_BUTTON,
-} from "../superagent/slackUi.ts";
+} from "../superagent/replies.ts";
 import {
   cancelJob,
+  confirmProject,
   handleMessage,
+  proposeProject,
   startDesign,
   startEstimate,
   startFeasibility,
@@ -182,7 +199,7 @@ function addUserMessage(conversationId: string, text: string) {
   return message;
 }
 
-/** Run something for a conversation; a failure becomes an error reply in the chat, as in Slack. */
+/** Run something for a conversation; a failure becomes an error reply in the chat. */
 async function inChat(ctx: Ctx, work: () => Promise<void>): Promise<void> {
   try {
     await work();
@@ -220,7 +237,7 @@ async function postMessage(c: Conversation, text: string) {
 
 const ActionBody = z.object({ actionId: z.string().min(1), value: z.string().default("") });
 
-/** A button under a message: the same actions as the Slack buttons (see src/slack.ts). */
+/** A button under a message: listing designs, next steps, cancel, and the agent's plan, question and confirm buttons. */
 async function runAction(c: Conversation, actionId: string, value: string): Promise<void> {
   const ctx = webCtx(c.id);
   const planDir = value || undefined;
@@ -258,6 +275,15 @@ async function runAction(c: Conversation, actionId: string, value: string): Prom
   if (actionId === FEASIBILITY_BUTTON) return inChat(ctx, () => startFeasibility(ctx, { planDir }));
   if (actionId === INTERIOR_BUTTON) return inChat(ctx, () => startInterior(ctx, { planDir }));
   if (actionId === CANCEL_BUTTON) return inChat(ctx, () => cancelJob(ctx, value || undefined));
+  if (actionId === CREATE_PROJECT_BUTTON) return inChat(ctx, () => proposeProject(ctx, value));
+  if (actionId === CONFIRM_PROJECT_BUTTON) {
+    addUserMessage(c.id, "Yes, create it");
+    return inChat(ctx, () => confirmProject(ctx, value));
+  }
+  if (actionId === SKIP_PROJECT_BUTTON) {
+    addUserMessage(c.id, "No");
+    return inChat(ctx, () => ctx.out.reply(projectSkippedReply()));
+  }
   throw new HttpError(400, `Unknown action "${actionId}".`);
 }
 
@@ -309,6 +335,31 @@ app.get("/projects", (req, res) => {
 
 app.get("/projects/summary", (_req, res) => {
   res.json(projectCounts());
+});
+
+const NewProject = z.object({ property: z.string().trim().min(1) });
+
+app.post("/projects", async (req, res) => {
+  const { property } = body(req, NewProject);
+  const match = findPlanByName(property);
+  if (match.kind === "ambiguous")
+    throw new HttpError(409, `"${property}" matches more than one designed property.`, {
+      options: match.items.map((p) => streetOf(p.listing.address)),
+    });
+  if (match.kind !== "found") throw new HttpError(404, `No house plan for "${property}".`);
+  const draft = draftProject(match.item.dir);
+  if (draft.kind === "error") throw new HttpError(409, draft.error);
+  if (draft.kind === "exists")
+    throw new HttpError(409, `${draft.project.data.name} is already the project at that address.`, {
+      id: draft.project.data.id,
+    });
+  res.status(201).json(projectDetail(await createProject(draft.project)));
+});
+
+app.patch("/projects/:id", async (req, res) => {
+  const found = lookupProject(req.params.id);
+  if (found.kind !== "found") throw new HttpError(404, `No project "${req.params.id}".`);
+  res.json(projectDetail(await updateProject(found.project.data.id, body(req, ProjectPatch))));
 });
 
 app.get("/projects/:id", (req, res) => {
@@ -504,7 +555,7 @@ app.use((req) => {
 
 const onError: ErrorRequestHandler = (err: unknown, _req, res, next) => {
   if (res.headersSent) return next(err);
-  if (err instanceof VendorError)
+  if (err instanceof VendorError || err instanceof ProjectError)
     return void res.status(err.kind === "not-found" ? 404 : 409).json({ error: err.message });
   if (err instanceof OrderError || err instanceof PaymentError) {
     const status = { "not-found": 404, "bad-reference": 400, "not-allowed": 409 }[err.kind];

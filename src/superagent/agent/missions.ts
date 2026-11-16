@@ -8,7 +8,7 @@
  *   - the Agent SDK session id: the SDK keeps the conversation with the model
  *     (every tool call and result), and resuming that session is what lets
  *     the agent pick up exactly where it stopped, after a pause or a restart,
- *   - the checklist shown in Slack,
+ *   - the checklist shown in the chat,
  *   - which slow jobs the user approved and how many have been used,
  *   - what it is waiting for (plan approval, an answer, a job).
  *
@@ -26,7 +26,8 @@ import type { JobKind } from "../queue.ts";
 import type { OrderChange } from "../../orders.ts";
 import type { PaymentChange } from "../../payments.ts";
 import type { VendorChange } from "../../vendors.ts";
-import type { LastAnswer } from "../sessions.ts";
+import type { ProjectChange } from "../skills/projects.ts";
+import { isWebKey, type LastAnswer } from "../sessions.ts";
 
 const DIR = process.env.MISSIONS_DIR || join(PROJECT_ROOT, "data", "missions");
 
@@ -42,7 +43,7 @@ const MAX_AGE_DAYS = 30;
 export type MissionState =
   "running" | "waiting-approval" | "waiting-answer" | "done" | "failed" | "cancelled";
 
-/** One line of the checklist shown in Slack. */
+/** One line of the checklist shown in the chat. */
 export type Step = { text: string; state: "running" | "done" | "failed" };
 
 /** How many slow jobs of each kind. */
@@ -52,12 +53,10 @@ export type Mission = {
   id: string;
   /** The conversation it belongs to (see conversationKey in sessions.ts). */
   key: string;
-  /** Slack user id of the person who gave the goal; only they can approve its plans. */
+  /** Who gave the goal; only they can approve its plans. */
   user: string;
   goal: string;
   state: MissionState;
-  /** Started by the scheduler (no one to approve plans or answer questions), so only quick tools. */
-  unattended?: boolean;
   /** Started as a follow-up to this earlier request, whose answer the model was given. */
   followsUp?: string;
   /** The first message the model gets: the goal, after any earlier answer it follows up on. */
@@ -83,7 +82,7 @@ export type Mission = {
   /** The question waiting for an answer, with the options offered as buttons. */
   pendingQuestion?: { question: string; options: string[] };
   /** A vendor, order or payment change waiting for the user's yes; code makes it only after they confirm. */
-  pendingChange?: VendorChange | OrderChange | PaymentChange;
+  pendingChange?: VendorChange | OrderChange | PaymentChange | ProjectChange;
   /** The slow job running for this mission right now (to cancel it with the mission). */
   inflight?: { jobId: string; kind: JobKind };
   /** How many model turns the mission has used (each turn decides the next tool calls). */
@@ -103,7 +102,7 @@ function load(): void {
   for (const file of readdirSync(DIR).filter((f) => f.endsWith(".json"))) {
     try {
       const m = JSON.parse(readFileSync(join(DIR, file), "utf8")) as Mission;
-      if (Date.parse(m.updatedAt) > cutoff) missions.set(m.id, m);
+      if (isWebKey(m.key) && Date.parse(m.updatedAt) > cutoff) missions.set(m.id, m);
     } catch {
       console.warn(`Could not read mission file ${file}; skipping it.`);
     }
@@ -150,7 +149,7 @@ export async function createMission(
   key: string,
   user: string,
   goal: string,
-  opts: { unattended?: boolean; previous?: LastAnswer[] } = {},
+  opts: { previous?: LastAnswer[] } = {},
 ): Promise<Mission> {
   const now = new Date().toISOString();
   const previous = opts.previous ?? [];
@@ -163,7 +162,6 @@ export async function createMission(
     user,
     goal,
     state: "running",
-    unattended: opts.unattended || undefined,
     followsUp: previous.at(-1)?.request,
     prompt: content,
     steps: [],
