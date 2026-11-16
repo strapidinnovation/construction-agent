@@ -173,7 +173,7 @@ Every message goes to an agent that works out the steps itself. The agent runs o
 
 ### Web API — `src/web/`
 
-The API behind the web UI (dashboard, project screen, chat), on `HTTP_PORT` (default 3001). No logins: every request is the same user.
+The API behind the web UI (dashboard, project screen, chat), on `HTTP_PORT` (default 3000). No logins: every request is the same user.
 
 | Method and path                    | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -307,7 +307,7 @@ cp .env.example .env   # then adjust if needed
 
 | Variable         | Default       | Meaning                                                                                                                        |
 | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `HTTP_PORT`      | `3001`        | Port of the web API                                                                                                            |
+| `HTTP_PORT`      | `3000`        | Port of the web API                                                                                                            |
 | `CORS_ORIGIN`    | `*`           | Which web origin may call the API from a browser                                                                               |
 | `LLM_BACKEND`    | `claude-code` | `claude-code`: Claude through the Claude Code CLI and the logged-in subscription · `ollama`: a local model through Ollama      |
 | `PLANNER_MODEL`  | `sonnet`      | Claude model that drives the agent (chooses tools for goals). Always Claude, via the Agent SDK, even with `LLM_BACKEND=ollama` |
@@ -323,7 +323,7 @@ cp .env.example .env   # then adjust if needed
 npm run dev
 ```
 
-It starts the web API (`Web API on http://localhost:3001`), prints which models it uses, checks that Claude Code is logged in (or Ollama has the models), and resumes any jobs interrupted by the last restart. Then open the web UI and chat with it.
+It starts the web API (`Web API on http://localhost:3000`), prints which models it uses, checks that Claude Code is logged in (or Ollama has the models), and resumes any jobs interrupted by the last restart. Then open the web UI and chat with it.
 
 **Claude Code backend.** Each model call runs `claude -p` with all of Claude Code's own tools, settings and MCP servers turned off, in an empty folder, so a chat message can't make it touch the computer. Usage counts against the logged-in subscription's limits; when they're reached SuperAgent says so until they reset. A subscription is meant for one person's use: for an assistant a whole team relies on, an API key is the cleaner route.
 
