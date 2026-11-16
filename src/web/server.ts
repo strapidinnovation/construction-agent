@@ -24,6 +24,11 @@
  *   POST   /payments                     { kind, projectId, vendorId?, title, amountUsd, proposedDate, ... }
  *   PATCH  /payments/:id                 (only the fields given change)
  *   DELETE /payments/:id                 (only while pending)
+ *   GET    /change-orders?projectId=&status=&kind=   (with pending / approved / rejected totals)
+ *   GET    /projects/:id/change-orders   (the same, for one project)
+ *   GET    /change-orders/:id            ("CO-1003")
+ *   POST   /change-orders                { projectId, kind: "small", title, reason?, lines, amountUsd, daysAdded?, status? }
+ *   PATCH  /change-orders/:id            { status: "approved" | "rejected" }   (only while pending)
  *   GET    /conversations                (chat sidebar, newest first)
  *   POST   /conversations                { projectId? }
  *   GET    /conversations/:id            (with every message)
@@ -42,6 +47,7 @@
  * same user (WEB_USER).
  */
 import express, { type ErrorRequestHandler, type Request, type Response } from "express";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { answerMission, approveMission, cancelMission } from "../superagent/agent/agent.ts";
@@ -84,6 +90,19 @@ import {
   paymentViews,
   updatePayment,
 } from "../payments.ts";
+import {
+  CHANGE_ORDER_KINDS,
+  CHANGE_ORDER_STATUSES,
+  ChangeOrderError,
+  ChangeOrderInput,
+  changeOrderSummary,
+  changeOrderView,
+  createChangeOrder,
+  decideChangeOrder,
+  getChangeOrder,
+  listChangeOrders,
+  type ChangeOrder,
+} from "../changeOrders.ts";
 import { OUTPUT_DIR, projectDocuments } from "../projectDocuments.ts";
 import { findPlanByName, streetOf } from "../superagent/plans.ts";
 import { draftProject } from "../superagent/skills/projectFromPlan.ts";
@@ -505,6 +524,80 @@ app.delete("/payments/:id", async (req, res) => {
   res.json({ deleted: payment.id });
 });
 
+const ChangeOrderQuery = z.object({
+  projectId: z.string().trim().min(1).optional(),
+  status: z.enum(CHANGE_ORDER_STATUSES).optional(),
+  kind: z.enum(CHANGE_ORDER_KINDS).optional(),
+});
+
+/** A change order with links to its PDF and, for a design change, the original and revised plans. */
+function changeOrderOut(co: ChangeOrder) {
+  const planUrl = (folder: string) => {
+    const pdf = join(OUTPUT_DIR, folder, "plan.pdf");
+    return existsSync(pdf) ? fileUrl(pdf) : null;
+  };
+  return {
+    ...changeOrderView(co),
+    pdfUrl: co.pdf ? fileUrl(join(OUTPUT_DIR, co.pdf)) : null,
+    revision: co.revision
+      ? {
+          ...co.revision,
+          planUrl: planUrl(co.revision.dir),
+          originalPlanUrl: planUrl(co.revision.basedOn),
+        }
+      : null,
+  };
+}
+
+function changeOrderList(query: unknown) {
+  const parsed = ChangeOrderQuery.safeParse(query);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    throw new HttpError(400, `${first?.path.join(".")}: ${first?.message}`);
+  }
+  return {
+    changeOrders: listChangeOrders(parsed.data).map(changeOrderOut),
+    summary: changeOrderSummary(listChangeOrders({ projectId: parsed.data.projectId })),
+  };
+}
+
+app.get("/change-orders", (req, res) => {
+  res.json(changeOrderList(req.query));
+});
+
+app.get("/projects/:id/change-orders", (req, res) => {
+  const found = lookupProject(req.params.id);
+  if (found.kind !== "found") throw new HttpError(404, `No project "${req.params.id}".`);
+  res.json(changeOrderList({ ...req.query, projectId: found.project.data.id }));
+});
+
+function changeOrderOr404(id: string) {
+  const co = getChangeOrder(id);
+  if (!co) throw new HttpError(404, `No change order ${id}.`);
+  return co;
+}
+
+app.get("/change-orders/:id", (req, res) => {
+  res.json(changeOrderOut(changeOrderOr404(req.params.id)));
+});
+
+/** Small change orders only: a design change needs the agent to revise the plan first. */
+const NewChangeOrder = ChangeOrderInput.extend({
+  kind: z.literal("small").default("small"),
+  revision: z.null().default(null),
+});
+
+app.post("/change-orders", async (req, res) => {
+  res.status(201).json(changeOrderOut(await createChangeOrder(body(req, NewChangeOrder))));
+});
+
+const Decision = z.object({ status: z.enum(["approved", "rejected"]) }).strict();
+
+app.patch("/change-orders/:id", async (req, res) => {
+  const co = changeOrderOr404(req.params.id);
+  res.json(changeOrderOut(await decideChangeOrder(co.id, body(req, Decision).status)));
+});
+
 app.get("/conversations", (_req, res) => {
   res.json({ conversations: allConversations().map(listItem) });
 });
@@ -557,7 +650,7 @@ const onError: ErrorRequestHandler = (err: unknown, _req, res, next) => {
   if (res.headersSent) return next(err);
   if (err instanceof VendorError || err instanceof ProjectError)
     return void res.status(err.kind === "not-found" ? 404 : 409).json({ error: err.message });
-  if (err instanceof OrderError || err instanceof PaymentError) {
+  if (err instanceof OrderError || err instanceof PaymentError || err instanceof ChangeOrderError) {
     const status = { "not-found": 404, "bad-reference": 400, "not-allowed": 409 }[err.kind];
     return void res.status(status).json({ error: err.message });
   }

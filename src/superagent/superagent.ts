@@ -52,6 +52,7 @@ import { estimateCost } from "./skills/estimate.ts";
 import { planTimeline } from "./skills/timeline.ts";
 import { feasibilityReport, type FeasibilityResult } from "./skills/feasibility.ts";
 import { designInterior, type InteriorResult } from "./skills/interior.ts";
+import { reviseDesign, type RevisionRequest, type RevisionResult } from "./skills/revision.ts";
 import type { DesignResult } from "./skills/design.ts";
 import type { EstimateResult } from "./skills/estimate.ts";
 import type { TimelineResult } from "./skills/timeline.ts";
@@ -83,6 +84,7 @@ import {
   planAmbiguousReply,
   queuedText,
   resumeReply,
+  revisionTitle,
   stepText,
   street,
   timelineDoneReply,
@@ -708,6 +710,46 @@ export async function queueInterior(
 }
 
 /**
+ * Revise a project's design for a design change order: a new plan and
+ * estimate (and timeline, for a project in planning) in a new folder. Only
+ * the agent starts these; its mission restarts the job after a restart.
+ */
+export async function queueRevision(
+  ctx: Ctx,
+  req: RevisionRequest,
+  opts?: QueueOpts,
+): Promise<Started<RevisionResult>> {
+  const listing = planListing(req.baseDir);
+  return queueJob(
+    ctx,
+    {
+      kind: "revision",
+      listing,
+      saved: { planDir: req.baseDir },
+      models: [DESIGN_MODEL, ESTIMATE_MODEL],
+      title: revisionTitle(street(listing), req.title),
+      note: `Redraws the plan and estimates it again${req.timelineStart === null ? "" : ", then plans the timeline"} (about ${req.timelineStart === null ? 20 : 26} minutes).`,
+      work: async (step) => {
+        const r = await reviseDesign(req, step);
+        await ctx.out.upload(
+          [
+            { path: r.pngPath, title: "Revised site and floor plan (preview)" },
+            { path: r.pdfPath, title: "Revised site and floor plan (PDF)" },
+            { path: r.estimate.pdfPath, title: "Revised material and cost estimate (PDF)" },
+            ...(r.timeline
+              ? [{ path: r.timeline.pdfPath, title: "Revised construction timeline (PDF)" }]
+              : []),
+          ],
+          "Here's the revised design and its estimate. The original design stays on file.",
+        );
+        return r;
+      },
+    },
+    opts,
+  );
+}
+
+/**
  * Called once when the bot starts. Jobs still saved in a conversation's
  * memory were interrupted by a restart (jobs are removed when they end), so
  * say so and queue them again with the same inputs, in the order they were
@@ -726,6 +768,8 @@ export async function resumeJobs(makeCtx: (key: string, user: string) => Ctx): P
       count++;
       const ctx = makeCtx(key, job.user);
       console.log(`Resuming ${job.kind} in ${key}`);
+      // Revisions are only started by the agent, which restarts them itself.
+      if (job.kind === "revision") continue;
       try {
         const subject = job.listing ? street(job.listing) : "";
         await ctx.out.reply(resumeReply({ kind: job.kind, subject }));

@@ -173,6 +173,10 @@ export function feasibilityTitle(subject?: string): string {
   return `📋 **Preparing the feasibility report${subject ? ` for ${subject}` : ""}**`;
 }
 
+export function revisionTitle(subject: string, title: string): string {
+  return `📐 **Revising the design for ${subject}**: ${title}`;
+}
+
 export function interiorTitle(subject?: string): string {
   return `🛋️ **Designing the 3D interior${subject ? ` for ${subject}` : ""}**`;
 }
@@ -205,6 +209,7 @@ const JOB_NAME: Record<JobKind, string> = {
   timeline: "timeline",
   feasibility: "feasibility report",
   interior: "3D interior",
+  revision: "design revision",
 };
 
 /** "the cost estimate for 3218 Brass Buttons Trl" */

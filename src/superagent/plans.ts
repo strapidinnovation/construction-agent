@@ -9,12 +9,14 @@
  * rather than on whatever was designed last.
  *
  * If a property was designed more than once, the newest plan wins (folder
- * names start with the date and time, so sorting them sorts by age).
+ * names start with the date and time, so sorting them sorts by age). A design
+ * revision only counts once its change order is approved (see revisions.ts).
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Listing } from "../agents/landSearch.ts";
 import { PROJECT_ROOT } from "../paths.ts";
+import { isCurrentPlan } from "../revisions.ts";
 import { bestMatch, type MatchResult } from "./match.ts";
 
 const OUTPUT = join(PROJECT_ROOT, "output");
@@ -45,7 +47,7 @@ export function savedPlans(): SavedPlan[] {
   for (const name of readdirSync(OUTPUT).sort().reverse()) {
     const dir = join(OUTPUT, name);
     const listing = listingOfPlan(dir);
-    if (!listing || seen.has(listing.url)) continue;
+    if (!listing || seen.has(listing.url) || !isCurrentPlan(dir)) continue;
     seen.add(listing.url);
     plans.push({ dir, listing });
   }
