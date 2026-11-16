@@ -1,26 +1,21 @@
 /**
  * The web chat's Output (see the Output type in superagent.ts): what the
- * agent posts goes into the conversation's history (conversations.ts) instead
- * of Slack.
- *
- * The agent builds its replies for Slack (slackUi.ts, missionUi.ts). Here they
- * become what a web chat needs:
- *   - Slack "mrkdwn" becomes Markdown (*bold* -> **bold**, <url|text> -> [text](url)),
- *   - buttons become actions the UI can render and post back (server.ts),
+ * agent posts goes into the conversation's history (conversations.ts).
+ *   - replies are Markdown with their buttons, which the UI renders and
+ *     posts back (server.ts),
  *   - the status message is one chat message edited in place, and when it
  *     belongs to an agent mission it carries the mission's live checklist,
  *   - uploaded files get a download link (/files/<token>), and PDFs posted in
  *     a chat opened from a project are filed under that project.
  */
-import type { KnownBlock } from "@slack/types";
 import { existsSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { PROJECT_ROOT } from "../paths.ts";
 import { fileDocuments } from "../projectDocuments.ts";
+import { MISSION_CANCEL_BUTTON } from "../superagent/agent/missionReplies.ts";
 import { getMission } from "../superagent/agent/missions.ts";
-import { MISSION_CANCEL_BUTTON } from "../superagent/agent/missionUi.ts";
-import { isWebKey, WEB_KEY_PREFIX } from "../superagent/sessions.ts";
-import { CANCEL_BUTTON, type Reply } from "../superagent/slackUi.ts";
+import { CANCEL_BUTTON } from "../superagent/replies.ts";
+import { WEB_KEY_PREFIX } from "../superagent/sessions.ts";
 import type { Ctx, Output } from "../superagent/superagent.ts";
 import {
   getConversation,
@@ -34,86 +29,15 @@ import {
 /** Everyone using the web UI is the same person (no logins in this test setup). */
 export const WEB_USER = "web";
 
-export { isWebKey };
-
-/** The agent's memory key for a web conversation; keeps web chats apart from Slack ones. */
+/** The agent's memory key for a web conversation. */
 export const webKey = (conversationId: string) => `${WEB_KEY_PREFIX}${conversationId}`;
 export const conversationIdOf = (key: string) => key.slice(WEB_KEY_PREFIX.length);
 
-const EMOJI: Record<string, string> = {
-  arrows_counterclockwise: "🔄",
-  bar_chart: "📊",
-  building_construction: "🏗️",
-  calendar: "📅",
-  clipboard: "📋",
-  couch_and_lamp: "🛋️",
-  dart: "🎯",
-  hourglass_flowing_sand: "⏳",
-  house: "🏠",
-  large_green_circle: "🟢",
-  large_orange_circle: "🟠",
-  moneybag: "💰",
-  octagonal_sign: "🛑",
-  red_circle: "🔴",
-  speech_balloon: "💬",
-  warning: "⚠️",
-  white_check_mark: "✅",
-  white_circle: "⚪",
-  x: "❌",
-};
-
-/** Slack mrkdwn to Markdown. Single line breaks become hard breaks, as Slack shows them. */
-export function slackToMarkdown(text: string): string {
-  return text
-    .replace(/<(https?:[^|>]+)\|([^>]+)>/g, "[$2]($1)")
-    .replace(/<(https?:[^>]+)>/g, "$1")
-    .replace(/<@([A-Za-z0-9]+)>/g, "@$1")
-    .replace(/:([a-z_0-9+-]+):/g, (code, name: string) => EMOJI[name] ?? code)
-    .replace(/^(\s*)• /gm, "$1- ")
-    .replace(/(^|[\s(>])\*([^*\n]+?)\*(?=$|[\s).,:;!?—-])/gm, "$1**$2**")
-    .replace(/(^|[\s(>])_([^_\n]+?)_(?=$|[\s).,:;!?—-])/gm, "$1*$2*")
-    .replace(/@superagent\s+/g, "")
-    .replace(/([^\n])\n(?!\n)/g, "$1  \n");
-}
-
-type Button = {
-  type: string;
-  action_id?: string;
-  value?: string;
-  style?: "primary" | "danger";
-  text?: { text: string };
-};
-
-function action(b: Button): ChatAction[] {
-  if (b.type !== "button" || !b.action_id) return [];
-  return [
-    {
-      label: b.text?.text ?? b.action_id,
-      actionId: b.action_id,
-      value: b.value ?? "",
-      ...(b.style ? { style: b.style } : {}),
-    },
-  ];
-}
-
-/** A Slack reply as Markdown text and the buttons in it. */
-export function fromReply(reply: Reply): { text: string; actions: ChatAction[] } {
-  if (!reply.blocks?.length) return { text: slackToMarkdown(reply.text), actions: [] };
-  const parts: string[] = [];
-  const actions: ChatAction[] = [];
-  for (const block of reply.blocks as KnownBlock[]) {
-    if (block.type === "section") {
-      const lines = [block.text?.text ?? "", ...(block.fields ?? []).map((f) => f.text)];
-      parts.push(lines.filter(Boolean).join("\n"));
-      if (block.accessory) actions.push(...action(block.accessory as Button));
-    } else if (block.type === "context") {
-      parts.push(block.elements.map((e) => ("text" in e ? e.text : "")).join(" "));
-    } else if (block.type === "actions") {
-      for (const e of block.elements) actions.push(...action(e as Button));
-    }
-  }
-  return { text: slackToMarkdown(parts.filter(Boolean).join("\n\n")), actions };
-}
+/**
+ * Replies put one fact per line ("**Lot**\n60 x 150 ft"), so a single line
+ * break is shown as one instead of being joined into the line before (Markdown's default).
+ */
+const hardBreaks = (text: string) => text.replace(/([^\n])\n(?!\n)/g, "$1  \n");
 
 // ---------------------------------------------------------------------------
 // Files: only files inside output/ (where plans and reports are written) are
@@ -190,11 +114,14 @@ export function webOutput(conversationId: string, missionId?: string): Output {
   let status: ChatMessage | undefined;
 
   return {
-    async reply(reply) {
-      const { text, actions } = fromReply(reply);
+    async reply({ text, actions }) {
       upsertMessage(
         conversationId,
-        agentMessage({ kind: "text", text, ...(actions.length ? { actions } : {}) }),
+        agentMessage({
+          kind: "text",
+          text: hardBreaks(text),
+          ...(actions?.length ? { actions } : {}),
+        }),
       );
     },
     async status(text, opts) {
@@ -217,7 +144,7 @@ export function webOutput(conversationId: string, missionId?: string): Output {
         agentMessage({ kind: "status", text: "" });
       status = {
         ...status,
-        text: slackToMarkdown(text),
+        text: hardBreaks(text),
         actions,
         mission,
         updatedAt: new Date().toISOString(),
@@ -232,7 +159,7 @@ export function webOutput(conversationId: string, missionId?: string): Output {
         conversationId,
         agentMessage({
           kind: "files",
-          text: slackToMarkdown(comment),
+          text: hardBreaks(comment),
           files: files.map((f) => ({
             title: f.title,
             name: basename(f.path),
@@ -250,7 +177,6 @@ export function webCtx(conversationId: string, user: string = WEB_USER, missionI
     key: webKey(conversationId),
     user,
     out: webOutput(conversationId, missionId),
-    mode: "thread",
     makeOutput: () => webOutput(conversationId),
   };
 }

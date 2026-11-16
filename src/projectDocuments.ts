@@ -4,7 +4,7 @@
  *
  *   - address: every slow job (design, estimate, timeline, feasibility,
  *     interior) writes into output/<time>_<address slug>/, so a folder made
- *     for the project's street address holds its documents (Slack or web);
+ *     for the project's street address holds its documents;
  *   - chat:    a PDF the agent posts in a web chat opened from the project's
  *     page is filed under that project (src/web/output.ts calls fileDocuments),
  *     whatever address it is for. These are remembered in
@@ -121,6 +121,17 @@ function folderIsFor(folder: string, address: string): boolean {
   return !!street && name.startsWith(`${street}-`) && (!zip || name.endsWith(`-${zip}`));
 }
 
+/** The job folders made for an address (full paths), newest first. */
+export function foldersFor(address: string): string[] {
+  if (!existsSync(OUTPUT_DIR)) return [];
+  return readdirSync(OUTPUT_DIR, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && folderIsFor(e.name, address))
+    .map((e) => e.name)
+    .sort()
+    .reverse()
+    .map((name) => join(OUTPUT_DIR, name));
+}
+
 export type ProjectDocument = {
   /** The path inside output/; also what the agent uses to name one. */
   path: string;
@@ -158,15 +169,10 @@ function describe(
 /** Every PDF of a project, newest first. */
 export function projectDocuments(project: Project): ProjectDocument[] {
   const found = new Map<string, ProjectDocument>();
-  const folders = existsSync(OUTPUT_DIR)
-    ? readdirSync(OUTPUT_DIR, { withFileTypes: true }).filter(
-        (e) => e.isDirectory() && folderIsFor(e.name, project.data.site.address),
-      )
-    : [];
-  for (const folder of folders) {
-    for (const file of readdirSync(join(OUTPUT_DIR, folder.name))) {
+  for (const folder of foldersFor(project.data.site.address)) {
+    for (const file of readdirSync(folder)) {
       if (!file.toLowerCase().endsWith(".pdf")) continue;
-      const doc = describe(join(folder.name, file), ["address"]);
+      const doc = describe(join(basename(folder), file), ["address"]);
       if (doc) found.set(doc.path, doc);
     }
   }

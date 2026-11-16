@@ -27,7 +27,7 @@ export type Job = {
   id: string;
   /** The conversation the job belongs to (see conversationKey in sessions.ts). */
   key: string;
-  /** Slack user id of the person who asked; used for the per-person limit. */
+  /** Who asked; used for the per-person limit. */
   user: string;
   kind: JobKind;
   /**
@@ -140,7 +140,7 @@ async function next(): Promise<void> {
   try {
     await job.run(job.controller.signal);
   } catch (err) {
-    // Jobs report their own errors to Slack; this is only a safety net so one
+    // Jobs report their own errors in the chat; this is only a safety net so one
     // broken job can never stop the queue.
     console.error(`Job "${job.label}" failed:`, err);
   } finally {

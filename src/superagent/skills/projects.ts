@@ -2,25 +2,27 @@
  * Skill: ongoing construction projects.
  *
  * Projects live in data/projects/, one JSON file per project (dummy data for
- * now). Each file holds the project's dates, its 12 construction stages, the
- * issues that came up (with how many days of delay each caused), inspections
- * and a site log.
+ * now, plus projects created from a finished design). Each file holds the
+ * project's dates, its 12 construction stages, the issues that came up (with
+ * how many days of delay each caused), inspections and a site log.
  *
  * Who does what:
  *   - CODE works out every fact: current stage, % complete, days late, status
- *     (on track / at risk / delayed / on hold / completed), and the ranked list
+ *     (planning / on track / at risk / delayed / on hold / completed), and the ranked list
  *     of what caused the delay. Numbers never come from the AI model, so they
  *     always match the data.
  *   - The agent reads those facts (list_projects, project_details) and writes
  *     the answer.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { PROJECT_ROOT } from "../../paths.ts";
 import { bestMatch } from "../match.ts";
 
-const DIR = join(PROJECT_ROOT, "data", "projects");
+/** PROJECTS_DIR lets test scripts use their own copy. */
+const DIR = process.env.PROJECTS_DIR || join(PROJECT_ROOT, "data", "projects");
 
 /** The 12 standard stages, in order (the same breakdown the timeline agent uses). */
 export const STAGES = [
@@ -64,7 +66,7 @@ export const stageLabel = (s: (typeof STAGES)[number]) => STAGE_LABEL[s];
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "dates must be YYYY-MM-DD");
 const stage = z.enum(STAGES);
 
-const ProjectFile = z.object({
+export const ProjectFile = z.object({
   id: z.string(),
   name: z.string(),
   /** Other names people may use: street name, short name, address. */
@@ -160,7 +162,9 @@ export type Issue = ProjectFile["issues"][number];
 // Computed view of a project: the facts the agent reports.
 // ---------------------------------------------------------------------------
 
-export type ProjectStatus = "on-track" | "at-risk" | "delayed" | "on-hold" | "completed";
+/** "planning": no stage has started yet (e.g. a project created from a design). */
+export type ProjectStatus =
+  "planning" | "on-track" | "at-risk" | "delayed" | "on-hold" | "completed";
 
 /**
  * Status thresholds, in calendar days between the planned and forecast finish.
@@ -222,11 +226,13 @@ function compute(data: ProjectFile): Project {
     ? "completed"
     : data.onHold
       ? "on-hold"
-      : daysLate <= ON_TRACK_MAX_DAYS
-        ? "on-track"
-        : daysLate <= AT_RISK_MAX_DAYS
-          ? "at-risk"
-          : "delayed";
+      : data.stages.every((s) => s.status === "not-started")
+        ? "planning"
+        : daysLate <= ON_TRACK_MAX_DAYS
+          ? "on-track"
+          : daysLate <= AT_RISK_MAX_DAYS
+            ? "at-risk"
+            : "delayed";
 
   // A 6-week framing stage counts for more of the project than a 1-week
   // site-prep stage, so weight each stage by its planned length.
@@ -316,7 +322,8 @@ const STATUS_ORDER: Record<ProjectStatus, number> = {
   "at-risk": 1,
   "on-hold": 2,
   "on-track": 3,
-  completed: 4,
+  planning: 4,
+  completed: 5,
 };
 
 /**
@@ -326,16 +333,25 @@ const STATUS_ORDER: Record<ProjectStatus, number> = {
  * - "behind":    delayed or at risk.
  * - "attention": delayed, at risk or on hold (everything except on track).
  * - "on-hold":   paused projects only.
+ * - "planning":  projects that haven't started construction.
  */
-export const PROJECT_FILTERS = ["all", "delayed", "behind", "attention", "on-hold"] as const;
+export const PROJECT_FILTERS = [
+  "all",
+  "delayed",
+  "behind",
+  "attention",
+  "on-hold",
+  "planning",
+] as const;
 export type ProjectFilter = (typeof PROJECT_FILTERS)[number];
 
 const FILTER_STATUSES: Record<ProjectFilter, ProjectStatus[]> = {
-  all: ["delayed", "at-risk", "on-hold", "on-track"],
+  all: ["delayed", "at-risk", "on-hold", "on-track", "planning"],
   delayed: ["delayed"],
   behind: ["delayed", "at-risk"],
   attention: ["delayed", "at-risk", "on-hold"],
   "on-hold": ["on-hold"],
+  planning: ["planning"],
 };
 
 /** Ongoing projects (completed ones are left out) that match `filter`, most urgent first. */
@@ -376,6 +392,7 @@ export function findProject(query: string): FindResult {
 }
 
 const STATUS_TEXT: Record<ProjectStatus, string> = {
+  planning: "planning (construction not started)",
   "on-track": "on track",
   "at-risk": "at risk of delay",
   delayed: "delayed",
@@ -383,3 +400,114 @@ const STATUS_TEXT: Record<ProjectStatus, string> = {
   completed: "completed",
 };
 export const statusText = (s: ProjectStatus) => STATUS_TEXT[s];
+
+// ---------------------------------------------------------------------------
+// Creating and changing projects. Only through the API or a change the user
+// confirmed in the chat; each project is one file, written whole.
+// ---------------------------------------------------------------------------
+
+export class ProjectError extends Error {
+  constructor(
+    readonly kind: "not-found" | "not-allowed",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** "8435 Corral Ln, Austin, TX 78745" -> street "8435-corral-ln" and ZIP "78745", to compare addresses. */
+function addressKey(address: string): { street: string; zip?: string } {
+  const street = (address.split(",")[0] ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return { street, zip: address.match(/\b\d{5}\b(?!.*\b\d{5}\b)/)?.[0] };
+}
+
+/** The project at this address (same street and, when both have one, ZIP), if any. */
+export function projectAt(address: string): Project | undefined {
+  const want = addressKey(address);
+  return loadProjects().find((p) => {
+    const have = addressKey(p.data.site.address);
+    return have.street === want.street && (!have.zip || !want.zip || have.zip === want.zip);
+  });
+}
+
+/** Writes are chained so two quick saves can't interleave. */
+let saving: Promise<void> = Promise.resolve();
+
+function write(data: ProjectFile): Promise<void> {
+  const file = join(DIR, `${data.id}.json`);
+  const snapshot = `${JSON.stringify(data, null, 2)}\n`;
+  saving = saving.then(async () => {
+    mkdirSync(DIR, { recursive: true });
+    await writeFile(`${file}.tmp`, snapshot);
+    await rename(`${file}.tmp`, file);
+  });
+  return saving;
+}
+
+export async function createProject(input: ProjectFile): Promise<Project> {
+  const data = ProjectFile.parse(input);
+  if (!/^[a-z0-9-]+$/.test(data.id))
+    throw new ProjectError("not-allowed", `Bad project id "${data.id}".`);
+  const all = loadProjects();
+  if (all.some((p) => p.data.id === data.id))
+    throw new ProjectError("not-allowed", `A project with the id "${data.id}" already exists.`);
+  const there = projectAt(data.site.address);
+  if (there)
+    throw new ProjectError(
+      "not-allowed",
+      `${there.data.name} is already the project at ${data.site.address}.`,
+    );
+  await write(data);
+  return compute(data);
+}
+
+/** The project fields that can be changed after it is created. */
+export const ProjectPatch = z
+  .object({
+    name: z.string().min(1),
+    client: z.string().min(1),
+    builder: z.string().min(1),
+    projectManager: z.string().min(1),
+    superintendent: z.string().min(1),
+    description: z.string().min(1),
+    contractUsd: z.number().min(0),
+  })
+  .partial()
+  .strict();
+export type ProjectPatch = z.infer<typeof ProjectPatch>;
+
+export async function updateProject(id: string, patch: ProjectPatch): Promise<Project> {
+  const p = loadProjects().find((x) => x.data.id === id);
+  if (!p) throw new ProjectError("not-found", `No project ${id}.`);
+  const { name, client, builder, projectManager, superintendent, description, contractUsd } =
+    ProjectPatch.parse(patch);
+  const d = p.data;
+  const data = ProjectFile.parse({
+    ...d,
+    name: name ?? d.name,
+    client: client ?? d.client,
+    team: {
+      builder: builder ?? d.team.builder,
+      projectManager: projectManager ?? d.team.projectManager,
+      superintendent: superintendent ?? d.team.superintendent,
+    },
+    scope: { ...d.scope, description: description ?? d.scope.description },
+    budget: { ...d.budget, contractUsd: contractUsd ?? d.budget.contractUsd },
+  });
+  await write(data);
+  return compute(data);
+}
+
+/** A project change the agent proposed and the user has to confirm. */
+export type ProjectChange = { entity: "project" } & (
+  { action: "create"; input: ProjectFile } | { action: "update"; id: string; patch: ProjectPatch }
+);
+
+export function applyProjectChange(change: ProjectChange): Promise<Project> {
+  return change.action === "create"
+    ? createProject(change.input)
+    : updateProject(change.id, change.patch);
+}

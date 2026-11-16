@@ -18,7 +18,7 @@
  *   - QWEN only writes the short plain-English summary, from those numbers.
  *
  * Output in the plan folder: feasibility.json (all data) and
- * feasibility.html (the report; the Slack skill prints it to PDF).
+ * feasibility.html (the report; the feasibility skill prints it to PDF).
  */
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";

@@ -6,16 +6,16 @@
  * because they must work instantly and the same way every time: answers to a
  * plan or question the agent is waiting on, "cancel", "help", and the buttons.
  *
- * Nothing in this file talks to Slack directly. src/slack.ts creates an
- * Output that posts to Slack and passes it in. That separation means
- * the same logic can be driven by a test script that prints to the console.
+ * Nothing in this file knows about the web chat. src/web/output.ts creates an
+ * Output that saves to a conversation and passes it in. That separation means
+ * the same logic can be driven by a test script.
  *
  * Slow jobs (house design, cost estimate, timeline, feasibility, 3D interior) go into the
  * job queue (queue.ts) and report progress while they run, whether the agent
  * or a button started them.
  */
 import { existsSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { DESIGN_MODEL, ESTIMATE_MODEL, MODEL } from "../llm.ts";
 import { answerMission, cancelMission, startMission } from "./agent/agent.ts";
 import { activeMission, waitingMission } from "./agent/missions.ts";
@@ -41,11 +41,13 @@ import {
   getSession,
   saveJob,
   updateSession,
-  type ReplyMode,
   type SavedJob,
   type Session,
 } from "./sessions.ts";
+import { OUTPUT_DIR } from "../projectDocuments.ts";
 import { designHouse } from "./skills/design.ts";
+import { draftProject } from "./skills/projectFromPlan.ts";
+import { createProject } from "./skills/projects.ts";
 import { estimateCost } from "./skills/estimate.ts";
 import { planTimeline } from "./skills/timeline.ts";
 import { feasibilityReport, type FeasibilityResult } from "./skills/feasibility.ts";
@@ -74,6 +76,9 @@ import {
   noPlanForReply,
   noPlanReply,
   noSuchListingNumberReply,
+  projectCreatedReply,
+  projectExistsReply,
+  projectProposalReply,
   modelDownReply,
   planAmbiguousReply,
   queuedText,
@@ -84,14 +89,14 @@ import {
   timelineTitle,
   whichListingReply,
   type Reply,
-} from "./slackUi.ts";
+} from "./replies.ts";
 
 /** How many slow jobs one person may have waiting or running at the same time. */
 const MAX_JOBS_PER_USER = 2;
 
 /**
- * Where SuperAgent sends its answers for one conversation. src/slack.ts implements
- * this for Slack; a test can implement it with console.log.
+ * Where SuperAgent sends its answers for one conversation. src/web/output.ts
+ * implements this for web chats.
  */
 export type Output = {
   /** Post a new message in the conversation. */
@@ -109,11 +114,9 @@ export type Output = {
 
 /**
  * Who is asking and where to answer. Every request carries one of these:
- * - key:  which conversation's memory to use (see conversationKey in sessions.ts),
- * - user: the Slack user id of the person who wrote the message or clicked,
+ * - key:  which conversation's memory to use (see WEB_KEY_PREFIX in sessions.ts),
+ * - user: who wrote the message or clicked,
  * - out:  how to post into that conversation,
- * - mode: how the bot holds conversations (thread / channel / user), used to
- *         describe its memory in the help message.
  * - makeOutput: a fresh Output for the same conversation. Each Output keeps ONE
  *         status message, so the agent gives every job it starts its own Output
  *         (otherwise the jobs would overwrite the agent's checklist).
@@ -122,7 +125,6 @@ export type Ctx = {
   key: string;
   user: string;
   out: Output;
-  mode?: ReplyMode;
   makeOutput?: () => Output;
 };
 
@@ -144,7 +146,7 @@ export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
     const mission = activeMission(ctx.key);
     return mission ? cancelMission(ctx, mission.id) : cancelJob(ctx);
   }
-  if (HELP.test(text)) return ctx.out.reply(helpReply(ctx.mode));
+  if (HELP.test(text)) return ctx.out.reply(helpReply());
   await startMission(ctx, text);
 }
 
@@ -257,7 +259,7 @@ async function queueJob<R>(ctx: Ctx, job: JobSpec<R>, opts: QueueOpts = {}): Pro
     // Cancelled while still waiting: it never ran, so just tidy up.
     dropped: async () => {
       await forget();
-      await out.status(stepText(job.title, ":octagonal_sign: Cancelled."));
+      await out.status(stepText(job.title, "🛑 Cancelled."));
       settle({ status: "cancelled" });
     },
     run: async (signal) => {
@@ -271,16 +273,16 @@ async function queueJob<R>(ctx: Ctx, job: JobSpec<R>, opts: QueueOpts = {}): Pro
       try {
         step("Starting…");
         const value = await job.work(step);
-        await out.status(stepText(job.title, ":white_check_mark: Done."));
+        await out.status(stepText(job.title, "✅ Done."));
         settle({ status: "done", value });
       } catch (err) {
         if (signal.aborted || err instanceof Cancelled) {
-          await out.status(stepText(job.title, ":octagonal_sign: Cancelled."));
+          await out.status(stepText(job.title, "🛑 Cancelled."));
           await out.reply(cancelledReply({ kind: job.kind, subject }));
           settle({ status: "cancelled" });
         } else {
           console.error(err);
-          await out.status(stepText(job.title, ":x: Stopped."));
+          await out.status(stepText(job.title, "❌ Stopped."));
           await out.reply(jobFailedReply(job.kind, err));
           settle({ status: "failed", error: err instanceof Error ? err.message : String(err) });
         }
@@ -308,8 +310,8 @@ function listingFor(session: Session, ref: ListingRef): { listing: Listing } | {
   if (ref.listing) return { listing: ref.listing };
   const { listings } = session;
   if (ref.url) {
-    // A button under someone else's listings (in "user" mode) isn't in this
-    // person's memory, so look in every conversation's memory too.
+    // A button under older listings may no longer be in this chat's memory,
+    // so look in every conversation's memory too.
     const listing = listings.find((l) => l.url === ref.url) ?? findListingByUrl(ref.url);
     return listing
       ? { listing }
@@ -712,17 +714,13 @@ export async function queueInterior(
  * asked for (so a design comes before the estimate waiting for it).
  *
  * `makeCtx` builds the Ctx for a conversation (src/main.ts supplies one that
- * posts to Slack or the web chat). Conversations `keep` rejects are left
- * alone, e.g. Slack ones when Slack isn't running.
+ * posts to the web chat).
  */
-export async function resumeJobs(
-  makeCtx: (key: string, user: string) => Ctx,
-  keep: (key: string) => boolean = () => true,
-): Promise<number> {
+export async function resumeJobs(makeCtx: (key: string, user: string) => Ctx): Promise<number> {
   let count = 0;
   for (const [key, session] of allSessions()) {
     const jobs = session.jobs ?? [];
-    if (!jobs.length || !keep(key)) continue;
+    if (!jobs.length) continue;
     await updateSession(key, { jobs: [] });
     for (const job of jobs) {
       count++;
@@ -747,4 +745,34 @@ export async function resumeJobs(
     }
   }
   return count;
+}
+
+// ---------------------------------------------------------------------------
+// Creating a project from a finished design (the "Create project" button).
+// ---------------------------------------------------------------------------
+
+/** A plan folder from a button, or null if it isn't one of ours. */
+function planFolder(planDir: string): string | null {
+  const full = resolve(planDir);
+  return full.startsWith(OUTPUT_DIR + sep) ? full : null;
+}
+
+/** Show the project the design would become, with Yes / No buttons. */
+export async function proposeProject(ctx: Ctx, planDir: string): Promise<void> {
+  const dir = planFolder(planDir);
+  const draft = dir ? draftProject(dir) : { kind: "error" as const, error: "No such plan." };
+  if (draft.kind === "error") return ctx.out.reply({ text: draft.error });
+  if (draft.kind === "exists") return ctx.out.reply(projectExistsReply(draft.project));
+  await ctx.out.reply(projectProposalReply(dir!, draft.project, draft.from));
+}
+
+/** The user said yes: make the project (drafted again, so it has the latest estimate and timeline). */
+export async function confirmProject(ctx: Ctx, planDir: string): Promise<void> {
+  const dir = planFolder(planDir);
+  const draft = dir ? draftProject(dir) : { kind: "error" as const, error: "No such plan." };
+  if (draft.kind === "error") return ctx.out.reply({ text: draft.error });
+  if (draft.kind === "exists") return ctx.out.reply(projectExistsReply(draft.project));
+  const project = await createProject(draft.project);
+  console.log(`Project ${project.data.id} created from ${dir}`);
+  await ctx.out.reply(projectCreatedReply(project));
 }

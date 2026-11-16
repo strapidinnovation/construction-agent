@@ -15,18 +15,14 @@ import { rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PROJECT_ROOT } from "../paths.ts";
 import type { MissionState, Step } from "../superagent/agent/missions.ts";
+import type { Action } from "../superagent/replies.ts";
 
 const DIR = process.env.CONVERSATIONS_DIR || join(PROJECT_ROOT, "data", "conversations");
 
 const SAVE_EVERY_MS = 1000;
 
 /** A button under a message. Clicking it posts { actionId, value } to the conversation's actions. */
-export type ChatAction = {
-  label: string;
-  actionId: string;
-  value: string;
-  style?: "primary" | "danger";
-};
+export type ChatAction = Action;
 
 export type ChatFile = { title: string; name: string; url: string | null };
 

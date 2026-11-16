@@ -5,9 +5,8 @@ __pycache__
 .env
 output
 outputs
-data/slack-sessions.json*
+data/sessions.json*
 data/missions/
 data/conversations/
-data/digest.json
 data/site-rules/
 data/project-documents.json

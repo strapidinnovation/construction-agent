@@ -2,7 +2,7 @@
  * Skill: design houses on a lot.
  *
  * It runs the whole design pipeline without asking questions, because in
- * Slack nobody is sitting at a prompt. Where details are missing, it picks a
+ * a chat nobody is sitting at a prompt. Where details are missing, it picks a
  * sensible answer and reports what it assumed:
  *
  *   1. Lot size     - from the listing, or what the user typed ("60x150",
@@ -15,9 +15,9 @@
  *                     what each one is (bedrooms, size, stories).
  *   4. Drawing      - the house designer agent draws the site plan and floor
  *                     plans as an SVG and writes plan.html.
- *   5. Slack files  - plan.pdf and plan.png are made from those (render.ts).
+ *   5. Chat files   - plan.pdf and plan.png are made from those (render.ts).
  *
- * Like every skill, it knows nothing about Slack. It reports progress through
+ * Like every skill, it knows nothing about the chat. It reports progress through
  * the `onStep` callback and returns plain data.
  */
 import * as houseDesigner from "../../agents/houseDesigner.ts";

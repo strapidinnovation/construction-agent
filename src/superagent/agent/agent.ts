@@ -29,8 +29,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLANNER_MODEL } from "../../llm.ts";
 import { cancel } from "../queue.ts";
-import { getSession, isWebKey, recentHistory, threadSummary, updateSession } from "../sessions.ts";
-import { errorReply } from "../slackUi.ts";
+import { errorReply } from "../replies.ts";
+import { getSession, recentHistory, threadSummary, updateSession } from "../sessions.ts";
 import type { Ctx } from "../superagent.ts";
 import {
   MISSION_CANCEL_BUTTON,
@@ -40,7 +40,7 @@ import {
   missionResumeReply,
   missionStatusText,
   notYourMissionReply,
-} from "./missionUi.ts";
+} from "./missionReplies.ts";
 import {
   activeMissions,
   allMissions,
@@ -49,7 +49,7 @@ import {
   saveMission,
   type Mission,
 } from "./missions.ts";
-import { settlePendingChange, toolsFor, type AgentTool, type ToolOutcome } from "./tools.ts";
+import { settlePendingChange, TOOLS, type AgentTool, type ToolOutcome } from "./tools.ts";
 
 /** How many model turns one mission may use before it must answer. */
 const MAX_MODEL_CALLS = 25;
@@ -72,7 +72,7 @@ const SERVER = "superagent";
 /** An empty folder for the agent's sessions, so no project files, CLAUDE.md or settings are picked up. */
 const WORKDIR = join(tmpdir(), "superagent-agent");
 
-const SYSTEM = `You are SuperAgent, an autonomous assistant for a home builder, working in Slack.
+const SYSTEM = `You are SuperAgent, an autonomous assistant for a home builder, working in the company's chat app.
 Every message people send you comes to you: quick questions, follow-ups, single requests and multi-step goals.
 You reach the goal on your own by calling tools, one step at a time, until you can give a complete answer.
 Your tools are named mcp__superagent__<name>; below they are called by <name>.
@@ -85,7 +85,7 @@ feasibility (profit if sold, yield if rented), compare plans, and report on the 
 How to work:
 1. Work out what the message needs. Gather facts with the QUICK tools: search_land, check_site, list_saved_plans,
    compare_plans, conversation_status, list_projects, project_details, list_project_documents,
-   share_project_documents. They take seconds; use them as needed.
+   share_project_documents, read_report. They take seconds; use them as needed.
    research_site_rules needs no approval but takes 1-8 minutes per new property (cached after), so call it only
    for the lots the user asks about, not every search result. design_house already researches the rules itself.
    Some messages need no tool at all: a greeting, or a question your earlier answer already covers.
@@ -114,6 +114,13 @@ Recipes (adapt them to the goal):
 - "Send me / show me / where is the plan (estimate, timeline, report) for <project>": list_project_documents, then
   share_project_documents with the ones asked for (newest of a kind unless they name another). If there is none,
   say so and offer to make it (the project's street address is the property).
+- Questions about what is IN a plan, estimate, timeline or feasibility report ("what's the most expensive trade at
+  Corral Lane?", "when is the framing inspection?", "which homes did you compare it with?", "what approvals does it
+  need?"): read_report, the overview first, then the section that answers it (a trade, tasks, comps). Answer from
+  what it returns, never from memory, and say which report and date the numbers come from.
+- "Make it a project / start a project for <property>": create_project (it needs a plan; if there is none, design
+  first, both in one plan). After a design_house you ran for the user finishes, end your answer by offering to make
+  it a project, unless one already exists there. "The client for <project> is …": update_project.
 - "What have we done / what are you working on / is it still running": conversation_status.
 6. To compare properties that have plans, use compare_plans: it shows a ranked table to the user and gives you the ranking.
 7. Name properties by street address exactly as the tools return them (e.g. "3218 Brass Buttons Trl").
@@ -123,15 +130,14 @@ Recipes (adapt them to the goal):
    start with the answer or recommendation in one sentence, then up to 5 short bullet points with the reasons
    (a simple question gets a short answer, without bullets if they add nothing).
    Use only facts and numbers from tool results or your earlier answers; never make up numbers. Under 150 words.
-   Slack formatting: *bold* and • bullets, no headings or tables (the user already saw the tables tools posted).
+   Markdown: **bold** and "- " bullets, no headings or tables (the user already saw the tables tools posted).
 11. A follow-up ("why should I worry about them?", "how did you pick that one?", "how long would each take?") is
    about your earlier answers, given before the new request with the steps you took. Answer straight from them only
    when they already contain what is asked, and be honest about what they were based on; otherwise call tools for
    the things they name.`;
 
-/** Added for web chats, the only place the vendor, order and payment tools are offered. */
 const VENDORS = `
-Vendors, orders and payments (this chat only): you can also manage the builder's vendors (subcontractors, suppliers,
+Vendors, orders and payments: you can also manage the builder's vendors (subcontractors, suppliers,
 consultants), each with the construction stages it can work on; orders: what the builder orders from a vendor for
 a project (numbered like PO-1012, with line items, a total and a status: created, sent, confirmed, fulfilled or
 cancelled); and payments (numbered like PMT-1012): client collections (the client's deposit, milestone draws and
@@ -141,7 +147,7 @@ pending, overdue (pending past its proposed date) or completed.
   can do framing?", "which orders are overdue?", "what is the client behind on at Corral Lane?", "what do we owe
   vendors this month?"). list_payments also gives pending, overdue and completed totals and the net cash.
 - create_vendor, update_vendor, delete_vendor, create_order, update_order, delete_order, create_payment,
-  update_payment and delete_payment never save anything themselves: they show the change to the user with Yes / No
+  update_payment, delete_payment, create_project and update_project never save anything themselves: they show the change to the user with Yes / No
   buttons and pause. Code saves it only if the user says yes, and the next message tells you whether it was saved.
   Never say a change is saved before that message says so.
 - A new vendor needs a name, type, trade and at least one stage. A new order needs the project, vendor, a title and
@@ -160,15 +166,10 @@ pending, overdue (pending past its proposed date) or completed.
 function systemPrompt(m: Mission): string {
   return [
     SYSTEM,
-    ...(isWebKey(m.key) ? [VENDORS] : []),
+    VENDORS,
     "",
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
     `What happened in this conversation before the goal:\n${threadSummary(getSession(m.key))}`,
-    ...(m.unattended
-      ? [
-          "This is a scheduled report: nobody is there to approve plans or answer questions, so you only have quick tools. Answer from what they find.",
-        ]
-      : []),
   ].join("\n");
 }
 
@@ -255,7 +256,7 @@ async function callTool(ctx: Ctx, m: Mission, t: AgentTool, args: unknown): Prom
 function toolServer(ctx: Ctx, m: Mission) {
   return createSdkMcpServer({
     name: SERVER,
-    tools: toolsFor(m).map((t) =>
+    tools: TOOLS.map((t) =>
       tool(t.name, t.description, t.params.shape, (args) => {
         const run = (toolQueue.get(m.id) ?? Promise.resolve()).then(() =>
           callTool(ctx, m, t, args),
@@ -315,7 +316,7 @@ async function turn(
   mkdirSync(WORKDIR, { recursive: true });
   const abort = new AbortController();
   aborts.set(m.id, abort);
-  const tools = opts.noTools ? [] : toolsFor(m);
+  const tools = opts.noTools ? [] : TOOLS;
   const options: Options = {
     model: PLANNER_MODEL,
     cwd: WORKDIR,
@@ -362,7 +363,7 @@ async function work(ctx: Ctx, id: string, firstPrompt: string): Promise<void> {
     pausedTurns.delete(m.id);
     const { text, outOfTurns } = await turn(ctx, m, prompt);
     if ((m.state as string) === "cancelled") {
-      await ctx.out.status(missionStatusText(m, ":octagonal_sign: Cancelled."));
+      await ctx.out.status(missionStatusText(m, "🛑 Cancelled."));
       return;
     }
     // A pausing tool ended the turn: wait for the user. Their answer may
@@ -397,16 +398,15 @@ async function finish(ctx: Ctx, m: Mission, answer: string): Promise<void> {
   m.state = "done";
   m.answer = answer;
   await saveMission(m);
-  if (!m.unattended)
-    await updateSession(m.key, {
-      lastAnswer: {
-        request: m.goal,
-        summary: answer,
-        steps: m.steps.map((s) => s.text),
-        at: new Date().toISOString(),
-      },
-    });
-  await ctx.out.status(missionStatusText(m, ":white_check_mark: Done."));
+  await updateSession(m.key, {
+    lastAnswer: {
+      request: m.goal,
+      summary: answer,
+      steps: m.steps.map((s) => s.text),
+      at: new Date().toISOString(),
+    },
+  });
+  await ctx.out.status(missionStatusText(m, "✅ Done."));
   await ctx.out.reply(missionDoneReply(m, answer));
 }
 
@@ -416,25 +416,20 @@ async function fail(ctx: Ctx, id: string, err: unknown): Promise<void> {
   if (!m) return;
   m.state = "failed";
   await saveMission(m);
-  await ctx.out.status(missionStatusText(m, ":x: Stopped."));
+  await ctx.out.status(missionStatusText(m, "❌ Stopped."));
   await ctx.out.reply(errorReply(err));
 }
 
 // ---------------------------------------------------------------------------
-// Entry points used by superagent.ts (messages) and src/slack.ts (buttons).
+// Entry points used by superagent.ts (messages) and src/web/server.ts (buttons).
 // ---------------------------------------------------------------------------
 
 /**
  * Start working on a goal. Returns the mission id once it is under way (the
  * work continues in the background), or undefined if this conversation
  * already has MAX_MISSIONS_PER_CONVERSATION unfinished missions.
- * `unattended`: started by the scheduler, so only quick tools (nobody to ask).
  */
-export async function startMission(
-  ctx: Ctx,
-  goal: string,
-  opts: { unattended?: boolean } = {},
-): Promise<string | undefined> {
+export async function startMission(ctx: Ctx, goal: string): Promise<string | undefined> {
   const active = activeMissions(ctx.key);
   if (active.length >= MAX_MISSIONS_PER_CONVERSATION) {
     await ctx.out.reply(missionBusyReply(active));
@@ -442,11 +437,8 @@ export async function startMission(
   }
   // A message may build on earlier answers ("yes, run those", "why should I
   // worry about them?"), so the model gets the recent requests, steps and answers.
-  const previous = opts.unattended ? undefined : recentHistory(getSession(ctx.key));
-  const m = await createMission(ctx.key, ctx.user, goal, {
-    unattended: opts.unattended,
-    previous,
-  });
+  const previous = recentHistory(getSession(ctx.key));
+  const m = await createMission(ctx.key, ctx.user, goal, { previous });
   console.log(`Mission ${m.id} started in ${ctx.key}: "${goal}"`);
   void drive(ctx, m.id, m.prompt);
   return m.id;
@@ -469,7 +461,7 @@ async function resume(ctx: Ctx, m: Mission, prompt: string, stepText: string): P
 export async function approveMission(ctx: Ctx, id: string): Promise<void> {
   const m = getMission(id);
   if (!m || m.state !== "waiting-approval" || !m.pendingPlan) return;
-  if (ctx.user !== m.user) return ctx.out.reply(notYourMissionReply(m));
+  if (ctx.user !== m.user) return ctx.out.reply(notYourMissionReply());
   for (const [kind, n] of Object.entries(m.pendingPlan.counts))
     m.approved[kind as keyof typeof m.approved] =
       (m.approved[kind as keyof typeof m.approved] ?? 0) + n;
@@ -518,7 +510,7 @@ export async function cancelMission(ctx: Ctx, id: string): Promise<void> {
   aborts.get(m.id)?.abort();
   console.log(`Mission ${m.id} cancelled`);
   await ctx.out.reply(missionCancelledReply(m));
-  if (!driving.has(m.id)) await ctx.out.status(missionStatusText(m, ":octagonal_sign: Cancelled."));
+  if (!driving.has(m.id)) await ctx.out.status(missionStatusText(m, "🛑 Cancelled."));
 }
 
 /**
@@ -526,13 +518,9 @@ export async function cancelMission(ctx: Ctx, id: string): Promise<void> {
  * carry on from their saved session. A slow job that was interrupted doesn't
  * count against the approval, so the agent can run it again. Missions waiting
  * for the user stay paused; their buttons and replies still work.
- * Missions in conversations `keep` rejects are left alone (see resumeJobs).
  */
-export async function resumeMissions(
-  makeCtx: (key: string, user: string) => Ctx,
-  keep: (key: string) => boolean = () => true,
-): Promise<number> {
-  const running = allMissions().filter((m) => m.state === "running" && keep(m.key));
+export async function resumeMissions(makeCtx: (key: string, user: string) => Ctx): Promise<number> {
+  const running = allMissions().filter((m) => m.state === "running");
   for (const m of running) {
     let interrupted = "";
     if (m.inflight) {

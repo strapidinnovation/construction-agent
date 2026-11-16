@@ -1,25 +1,25 @@
-# SuperAgent — construction assistant for Slack
+# SuperAgent — construction assistant
 
-SuperAgent is a Slack bot that helps a small builder or developer go from "where can I build?" to "is it worth it?" — and keeps an eye on the projects already under construction. You tag it in a channel in plain English; it finds land, designs houses that fit the local zoning, estimates the cost, plans the construction schedule, writes a feasibility report, and reports on ongoing projects.
+SuperAgent helps a small builder or developer go from "where can I build?" to "is it worth it?" — and keeps an eye on the projects already under construction. You chat with it in plain English in the web UI (a separate React app that talks to the API in `src/web/`); it finds land, designs houses that fit the local zoning, estimates the cost, plans the construction schedule, writes a feasibility report, reports on ongoing projects, and manages vendors, orders and payments.
 
-Give it a **goal** instead of a single task and it works as an **agent**: it decides on its own which of those skills to use and in what order, checks results, changes course, asks you when it needs to, and asks your approval before any long-running work. It also acts on its own: a daily project digest.
+Give it a **goal** instead of a single task and it works as an **agent**: it decides on its own which of those skills to use and in what order, checks results, changes course, asks you when it needs to, and asks your approval before any long-running work.
 
-The bot runs on your own machine and connects to Slack without needing a public server. Its AI is Claude, used through the Claude Code CLI and your Claude subscription (Sonnet for the agent, design and estimates); it can also run fully locally on [Ollama](https://ollama.com) (Qwen 3.5 9B) with `LLM_BACKEND=ollama`.
+The server runs on your own machine. Its AI is Claude, used through the Claude Code CLI and your Claude subscription (Sonnet for the agent, design and estimates); it can also run fully locally on [Ollama](https://ollama.com) (Qwen 3.5 9B) with `LLM_BACKEND=ollama`.
 
 ```
-@superagent land around 300k in Austin, TX
-@superagent design a house on Corral Lane
-@superagent estimate the cost for 8446 Corral Ln
-@superagent timeline starting Jan 4
-@superagent feasibility report for 8446 Corral Ln
-@superagent which projects are delayed?
-@superagent why is River Bend late?
+land around 300k in Austin, TX
+design a house on Corral Lane
+estimate the cost for 8446 Corral Ln
+timeline starting Jan 4
+feasibility report for 8446 Corral Ln
+which projects are delayed?
+why is River Bend late?
 
 # goals: the agent plans the steps itself
-@superagent find the best lot under 250k in Austin, TX to build on and sell
-@superagent find land under 300k in Austin and tell me which lots have no flood or soil problems
-@superagent compare the plans for Brass Buttons and Corral Lane — which is the better investment?
-@superagent which delayed projects have open permit issues, and what's the next step on each?
+find the best lot under 250k in Austin, TX to build on and sell
+find land under 300k in Austin and tell me which lots have no flood or soil problems
+compare the plans for Brass Buttons and Corral Lane — which is the better investment?
+which delayed projects have open permit issues, and what's the next step on each?
 ```
 
 > All results are planning-level concepts produced with an AI model and public data. They are not construction drawings, bids, appraisals or legal advice.
@@ -28,19 +28,20 @@ The bot runs on your own machine and connects to Slack without needing a public 
 
 ## What it can do
 
-| Feature                   | What you get                                                                                                                                                                                                                                     | Typical time                  |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
-| **Land search**           | For-sale land listings from Realtor.com in a city and budget ("300k", "200k–350k", "under 400k"), each with a **Design on this lot** button                                                                                                      | ~5–10 s                       |
-| **House design**          | Looks up the lot's zoning (Austin, TX zoning map; defaults elsewhere), decides how many homes fit (one house, several homes, or subdividing), and draws a site plan and floor plans. Posts a preview image and a PDF                             | ~5 min                        |
-| **Cost estimate**         | Materials and labor trade by trade (foundation, framing, roofing, …), with a contingency. Posts a summary and a detailed PDF                                                                                                                     | ~10 min                       |
-| **Construction timeline** | Every construction task with dates (weekends and US holidays skipped), the critical path, inspections, milestones and risks. Posts a summary and a Gantt-chart PDF                                                                               | ~3 min                        |
-| **Feasibility report**    | Flood zone, soil, Edwards Aquifer and utility checks; values and rents from nearby homes; profit if you **build and sell** vs. yield if you **build and rent**; a go / marginal / no-go verdict, risks and next steps. Posts a summary and a PDF | ~20 s (+ estimate if missing) |
-| **3D interior**           | A furnished 3D top view of every floor of a plan (walls cut low, real furniture, floors and finishes in a style picked for the house and its price). Posts a PDF with one picture per page and no text                                           | ~2–4 min                      |
-| **Ongoing projects**      | Lists construction projects with status (on track / at risk / delayed / on hold), current stage and % done; explains what's happening on one project and what's causing a delay                                                                  | ~1–5 s                        |
-| **Goals (the agent)**     | Multi-step requests: searches, site checks, designs, feasibility reports and comparisons chained by the agent itself, with a live checklist, a plan you approve before slow work, and a final recommendation built on the results                | ~20 s (quick tools) to ~1 h   |
-| **Daily digest**          | Every morning (optional) the agent posts which projects need attention, what's holding them up, the next steps and upcoming inspections                                                                                                          | ~30 s                         |
+| Feature                     | What you get                                                                                                                                                                                                                                                                                                                         | Typical time                  |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
+| **Land search**             | For-sale land listings from Realtor.com in a city and budget ("300k", "200k–350k", "under 400k"), each with a **Design on this lot** button                                                                                                                                                                                          | ~5–10 s                       |
+| **House design**            | Looks up the lot's zoning (Austin, TX zoning map; defaults elsewhere), decides how many homes fit (one house, several homes, or subdividing), and draws a site plan and floor plans. Posts a preview image and a PDF                                                                                                                 | ~5 min                        |
+| **Cost estimate**           | Materials and labor trade by trade (foundation, framing, roofing, …), with a contingency. Posts a summary and a detailed PDF                                                                                                                                                                                                         | ~10 min                       |
+| **Construction timeline**   | Every construction task with dates (weekends and US holidays skipped), the critical path, inspections, milestones and risks. Posts a summary and a Gantt-chart PDF                                                                                                                                                                   | ~3 min                        |
+| **Feasibility report**      | Flood zone, soil, Edwards Aquifer and utility checks; values and rents from nearby homes; profit if you **build and sell** vs. yield if you **build and rent**; a go / marginal / no-go verdict, risks and next steps. Posts a summary and a PDF                                                                                     | ~20 s (+ estimate if missing) |
+| **3D interior**             | A furnished 3D top view of every floor of a plan (walls cut low, real furniture, floors and finishes in a style picked for the house and its price). Posts a PDF with one picture per page and no text                                                                                                                               | ~2–4 min                      |
+| **Ongoing projects**        | Lists construction projects with status (planning / on track / at risk / delayed / on hold), current stage and % done; explains what's happening on one project and what's causing a delay                                                                                                                                           | ~1–5 s                        |
+| **Projects from designs**   | After a design, a **Create project** button (or asking the agent) turns the property into a project in **planning**: scope from the design, budget from the cost estimate, stage dates from the timeline (typical durations without one), client and team TBD until you fill them in. Its plan and reports show on its Documents tab | seconds                       |
+| **Questions about reports** | Ask about what's inside a plan, estimate, timeline or feasibility report ("most expensive trade?", "when is the framing inspection?", "which homes was it compared with?"); the agent reads the saved report data for exact numbers                                                                                                  | ~5–20 s                       |
+| **Goals (the agent)**       | Multi-step requests: searches, site checks, designs, feasibility reports and comparisons chained by the agent itself, with a live checklist, a plan you approve before slow work, and a final recommendation built on the results                                                                                                    | ~20 s (quick tools) to ~1 h   |
 
-Slow jobs run one at a time in a queue, show live progress with a **Cancel** button, and survive a bot restart. So do the agent's missions.
+Slow jobs run one at a time in a queue, show live progress with a **Cancel** button, and survive a server restart. So do the agent's missions.
 
 ---
 
@@ -48,16 +49,15 @@ Slow jobs run one at a time in a queue, show live progress with a **Cancel** but
 
 ```mermaid
 flowchart TB
-  U[Slack user<br/>@superagent ...] --> G
-  B[Buttons<br/>Design / Estimate / Timeline / Feasibility / 3D interior / Cancel<br/>Go / Answer] --> G
-  T[Scheduler<br/>daily digest] --> AG
+  U[Web UI chat<br/>messages] --> G
+  B[Buttons<br/>Design / Estimate / Timeline / Feasibility / 3D interior / Cancel<br/>Go / Answer / Yes / No] --> G
 
-  subgraph Bot["src/slack.ts — Slack gateway (Socket Mode)"]
-    G[Receives mentions & clicks<br/>posts replies, status edits, files]
+  subgraph Web["src/web/ — Express API"]
+    G[server.ts receives messages & clicks<br/>output.ts saves replies, status edits, files<br/>streamed to the UI]
   end
 
   G --> S[src/superagent/superagent.ts<br/>the brain]
-  S <--> M[(sessions.ts<br/>conversation memory<br/>data/slack-sessions.json)]
+  S <--> M[(sessions.ts<br/>conversation memory<br/>data/sessions.json)]
   S --> Q[queue.ts<br/>one slow job at a time]
   S -->|every message| AG[agent/agent.ts<br/>the agent loop<br/>planner model + tools]
   AG <--> MI[(agent/missions.ts<br/>data/missions/*.json)]
@@ -88,9 +88,9 @@ flowchart TB
 
 ### How a request flows
 
-1. **Slack gateway** (`src/slack.ts`) receives a mention or a button click over Slack Socket Mode (the bot connects _out_ to Slack, so no public URL is needed). It decides which conversation's memory to use and hands the request to the brain.
+1. **The web API** (`src/web/server.ts`) receives a chat message or a button click from the UI and hands it to the brain with an Output for that conversation (`src/web/output.ts`), which saves what the agent posts and streams it to the UI.
 2. **The brain** (`src/superagent/superagent.ts`) handles a few things in code, because they must be instant and predictable: a reply to a plan or question the agent is waiting on, `cancel`/`stop`, and `help`/`hi`. **Every other message goes to the agent** (`src/superagent/agent/`), described below. It answers quick questions in a few seconds and works through multi-step goals on its own.
-3. **Slow jobs** (design, estimate, timeline, feasibility, 3D interior) go into the **job queue** (`queue.ts`). The bot posts a status message with a **Cancel** button and edits it as the job progresses. When the job finishes it posts a summary and uploads the PDF. Buttons start these jobs directly, without the agent.
+3. **Slow jobs** (design, estimate, timeline, feasibility, 3D interior) go into the **job queue** (`queue.ts`). It posts a status message with a **Cancel** button and edits it as the job progresses. When the job finishes it posts a summary and uploads the PDF. Buttons start these jobs directly, without the agent.
 4. **Skills** (`src/superagent/skills/`) are thin wrappers that run the **agents** (`src/agents/`), which do the real work and write their results into a plan folder in `output/`.
 
 ### The agent
@@ -102,22 +102,24 @@ Every message goes to an agent that works out the steps itself. The agent runs o
 3. Code checks each call against the tool's schema, runs it, and returns a short result. Bad calls get a specific error back so the model can correct itself.
 4. Repeat until it answers. Claude Code's own tools (files, shell, web) are turned off and no local settings are loaded, so it can only use SuperAgent's tools.
 
-| Tool                                                                                      | Kind                      | What it does                                                                         |
-| ----------------------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------ |
-| `search_land`                                                                             | quick                     | Land listings in a city and budget (posts them with links)                           |
-| `check_site`                                                                              | quick                     | Flood, soil, aquifer and utility flags for up to 10 lots, without designing anything |
-| `list_saved_plans`, `compare_plans`                                                       | quick                     | Which properties have plans; a ranked side-by-side table built by code               |
-| `list_projects`, `project_details`                                                        | quick                     | Project status, delay causes, open issues and next steps                             |
-| `list_project_documents`, `share_project_documents`                                       | quick                     | A project's PDFs (plans, estimates, timelines, reports); post chosen ones as files   |
-| `conversation_status`                                                                     | quick                     | What happened in this conversation and what is running now                           |
-| `list_vendors`, `vendor_details`                                                          | quick (web chat only)     | Vendors by type, status, stage or text; everything about one vendor                  |
-| `create_vendor`, `update_vendor`, `delete_vendor`                                         | confirm (web chat only)   | Show the change with Yes / No buttons and pause; code saves it only after a yes      |
-| `list_orders`, `order_details`                                                            | quick (web chat only)     | Orders by project, vendor, status or text, with totals and overdue flags; one order  |
-| `create_order`, `update_order`, `delete_order`                                            | confirm (web chat only)   | Same as the vendor changes; code also refuses status moves backwards                 |
-| `list_payments`                                                                           | quick (web chat only)     | Client collections and vendor payments, with pending / overdue / completed totals    |
-| `create_payment`, `update_payment`, `delete_payment`                                      | confirm (web chat only)   | Same as the vendor changes; "we got the draw" marks a payment completed today        |
-| `design_house`, `estimate_cost`, `plan_timeline`, `feasibility_report`, `design_interior` | slow (minutes, via queue) | The existing skills; results and PDFs are posted as usual                            |
-| `propose_plan`, `ask_user`                                                                | control                   | Pause the mission for approval or an answer                                          |
+| Tool                                                                                      | Kind                      | What it does                                                                                                                                                            |
+| ----------------------------------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_land`                                                                             | quick                     | Land listings in a city and budget (posts them with links)                                                                                                              |
+| `check_site`                                                                              | quick                     | Flood, soil, aquifer and utility flags for up to 10 lots, without designing anything                                                                                    |
+| `list_saved_plans`, `compare_plans`                                                       | quick                     | Which properties have plans; a ranked side-by-side table built by code                                                                                                  |
+| `list_projects`, `project_details`                                                        | quick                     | Project status, delay causes, open issues and next steps                                                                                                                |
+| `list_project_documents`, `share_project_documents`                                       | quick                     | A project's PDFs (plans, estimates, timelines, reports); post chosen ones as files                                                                                      |
+| `read_report`                                                                             | quick                     | One section of a saved plan, estimate, timeline or feasibility report (by project or property): overview, a trade's line items, tasks by name or date, comparable homes |
+| `create_project`, `update_project`                                                        | confirm                   | Make a designed property a project in planning; fill in client, team, scope or contract. Saved only after a yes                                                         |
+| `conversation_status`                                                                     | quick                     | What happened in this conversation and what is running now                                                                                                              |
+| `list_vendors`, `vendor_details`                                                          | quick                     | Vendors by type, status, stage or text; everything about one vendor                                                                                                     |
+| `create_vendor`, `update_vendor`, `delete_vendor`                                         | confirm                   | Show the change with Yes / No buttons and pause; code saves it only after a yes                                                                                         |
+| `list_orders`, `order_details`                                                            | quick                     | Orders by project, vendor, status or text, with totals and overdue flags; one order                                                                                     |
+| `create_order`, `update_order`, `delete_order`                                            | confirm                   | Same as the vendor changes; code also refuses status moves backwards                                                                                                    |
+| `list_payments`                                                                           | quick                     | Client collections and vendor payments, with pending / overdue / completed totals                                                                                       |
+| `create_payment`, `update_payment`, `delete_payment`                                      | confirm                   | Same as the vendor changes; "we got the draw" marks a payment completed today                                                                                           |
+| `design_house`, `estimate_cost`, `plan_timeline`, `feasibility_report`, `design_interior` | slow (minutes, via queue) | The existing skills; results and PDFs are posted as usual                                                                                                               |
+| `propose_plan`, `ask_user`                                                                | control                   | Pause the mission for approval or an answer                                                                                                                             |
 
 **What code guarantees, whatever the model decides:**
 
@@ -126,47 +128,43 @@ Every message goes to an agent that works out the steps itself. The agent runs o
 - **Numbers from tools.** Comparison tables are built by code from the saved reports; the model is told to use only tool results.
 - **Its own lots.** The agent's designs don't change the conversation's "selected lot" or "latest plan"; it names properties itself.
 
-**Missions** (`agent/missions.ts`) record each goal: the Agent SDK session id, the checklist shown in Slack, what was approved, and what it's waiting for. They are saved to `data/missions/<id>.json` after every step. `propose_plan` and `ask_user` end the model's turn; your answer resumes the saved session, minutes or hours later, even after a restart (an interrupted job can be run again). The full transcript of every decision is in the session file under `~/.claude/projects/`.
-
-**Proactive:** with `DIGEST_CHANNEL` set, the scheduler (`agent/schedule.ts`) starts a mission every morning to brief the team on projects that need attention. Scheduled missions only get quick tools, since nobody is there to approve a plan.
+**Missions** (`agent/missions.ts`) record each goal: the Agent SDK session id, the checklist shown in the chat, what was approved, and what it's waiting for. They are saved to `data/missions/<id>.json` after every step. `propose_plan` and `ask_user` end the model's turn; your answer resumes the saved session, minutes or hours later, even after a restart (an interrupted job can be run again). The full transcript of every decision is in the session file under `~/.claude/projects/`.
 
 ### Design principles
 
 - **The AI decides and writes; code does the math and checks.** Qwen chooses the site strategy, draws the plan, estimates quantities, lists construction tasks and writes summaries. Code computes footprints, dates, the critical path, costs, profits, verdicts and project status — and validates the model's answers, sending specific errors back for a retry.
 - **Structured output.** Every non-drawing model call uses JSON-schema output (schemas defined with `zod`; `--json-schema` on Claude Code, `format` on Ollama), so replies always have the expected shape.
 - **Facts in, prose out.** Written answers (the agent's replies, feasibility summaries) come from facts code prepares, with instructions to use only those facts.
-- **Names, not numbers.** People refer to properties and projects by name ("Corral Lane", "the River Bend job"). Matching is done in code (`match.ts`), including street abbreviations ("Lane" ↔ "Ln") and house numbers, and the bot asks when a name is ambiguous.
+- **Names, not numbers.** People refer to properties and projects by name ("Corral Lane", "the River Bend job"). Matching is done in code (`match.ts`), including street abbreviations ("Lane" ↔ "Ln") and house numbers, and SuperAgent asks when a name is ambiguous.
 - **Fail soft.** If a public data source is down, that check says "not checked" and the report carries on with lower confidence.
 
 ---
 
 ## Components
 
-### Slack layer — `src/slack.ts` and `src/superagent/`
+### The brain — `src/superagent/`
 
-| File                       | Responsibility                                                                                                                                                  |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main.ts`                  | Entry point: starts the web API and (when its tokens are set) Slack in one process; checks the models, resumes interrupted jobs and missions, starts the digest |
-| `slack.ts`                 | Connects to Slack (Bolt, Socket Mode); handles mentions and buttons; posts replies, throttled status edits and file uploads                                     |
-| `superagent/superagent.ts` | The brain: sends messages to the agent, queues slow jobs, resolves which listing or plan a request refers to, handles cancel and restart recovery               |
-| `superagent/sessions.ts`   | Conversation memory (last search, listings, chosen lot, latest plan, queued jobs), saved to `data/slack-sessions.json`                                          |
-| `superagent/queue.ts`      | One-at-a-time job queue with duplicate detection, per-person limits and cancellation                                                                            |
-| `superagent/match.ts`      | Fuzzy name matching for listings, plans and projects                                                                                                            |
-| `superagent/plans.ts`      | Finds the saved plan folder for a property                                                                                                                      |
-| `superagent/health.ts`     | Checks the model backend is ready (Claude Code logged in, or Ollama running with the models) before starting a job                                              |
-| `superagent/render.ts`     | Prints HTML reports to PDF and the plan drawing to PNG with headless Chrome                                                                                     |
-| `superagent/slackUi.ts`    | All Slack message text, layouts (Block Kit) and buttons                                                                                                         |
-| `superagent/skills/*`      | One file per skill: search, design, estimate, timeline, feasibility, projects                                                                                   |
+| File                       | Responsibility                                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main.ts`                  | Entry point: starts the web API, checks the models, resumes interrupted jobs and missions                                                         |
+| `superagent/superagent.ts` | The brain: sends messages to the agent, queues slow jobs, resolves which listing or plan a request refers to, handles cancel and restart recovery |
+| `superagent/sessions.ts`   | Conversation memory (last search, listings, chosen lot, latest plan, queued jobs), saved to `data/sessions.json`                                  |
+| `superagent/queue.ts`      | One-at-a-time job queue with duplicate detection, per-person limits and cancellation                                                              |
+| `superagent/match.ts`      | Fuzzy name matching for listings, plans and projects                                                                                              |
+| `superagent/plans.ts`      | Finds the saved plan folder for a property                                                                                                        |
+| `superagent/health.ts`     | Checks the model backend is ready (Claude Code logged in, or Ollama running with the models) before starting a job                                |
+| `superagent/render.ts`     | Prints HTML reports to PDF and the plan drawing to PNG with headless Chrome                                                                       |
+| `superagent/replies.ts`    | All reply text (Markdown) and buttons                                                                                                             |
+| `superagent/skills/*`      | One file per skill: search, design, estimate, timeline, feasibility, projects (and `projectFromPlan.ts`: a new project from a design)             |
 
 ### The agent — `src/superagent/agent/`
 
-| File           | Responsibility                                                                                                                                |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent.ts`     | Runs missions on the Claude Agent SDK: serves the tools, enforces limits, pauses and resumes sessions; start, approve, answer, cancel, resume |
-| `tools.ts`     | The skills as tools (schemas, short results for the model), the approval budget for slow jobs, `propose_plan`, `ask_user`                     |
-| `missions.ts`  | Mission state and log, saved to `data/missions/<id>.json`                                                                                     |
-| `missionUi.ts` | Slack layouts: live checklist, plan with Go / Cancel, questions with answer buttons, comparison table, final answer                           |
-| `schedule.ts`  | Proactive work: the daily project digest                                                                                                      |
+| File                | Responsibility                                                                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent.ts`          | Runs missions on the Claude Agent SDK: serves the tools, enforces limits, pauses and resumes sessions; start, approve, answer, cancel, resume |
+| `tools.ts`          | The skills as tools (schemas, short results for the model), the approval budget for slow jobs, `propose_plan`, `ask_user`                     |
+| `missions.ts`       | Mission state and log, saved to `data/missions/<id>.json`                                                                                     |
+| `missionReplies.ts` | Replies (Markdown): live checklist, plan with Go / Cancel, questions with answer buttons, comparison table, final answer                      |
 
 ### Web API — `src/web/`
 
@@ -174,8 +172,10 @@ The API behind the web UI (dashboard, project screen, chat), on `HTTP_PORT` (def
 
 | Method and path                    | What it does                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /projects`                    | Project cards, most urgent first. `?filter=all\|delayed\|behind\|attention\|on-hold`, `?completed=true`                                                                                                                                                                                                                                                             |
+| `GET /projects`                    | Project cards, most urgent first. `?filter=all\|delayed\|behind\|attention\|on-hold\|planning`, `?completed=true`                                                                                                                                                                                                                                                   |
 | `GET /projects/summary`            | Counts by status, open issues, contract value and spend, for the dashboard tiles                                                                                                                                                                                                                                                                                    |
+| `POST /projects`                   | `{ "property": "8446 Corral Ln" }`: a new project from that property's newest plan (with its estimate and timeline if made), in planning with the client and team TBD. 409 if a project already exists at that address                                                                                                                                              |
+| `PATCH /projects/:id`              | Change `name`, `client`, `builder`, `projectManager`, `superintendent`, `description` or `contractUsd`                                                                                                                                                                                                                                                              |
 | `GET /projects/:id`                | Everything about one project, including its vendors (details, stages, scope, contract, status) and the vendors on each stage (an id, or a name like `river bend`; 409 lists the options if it is ambiguous)                                                                                                                                                         |
 | `GET /projects/:id/documents`      | The project's PDFs, newest first: those made for its address in `output/`, plus any PDF posted in a chat started from the project. Each has `title`, `kind`, `sizeBytes`, `createdAt`, `sources` (`address`, `chat`) and a `url` to open it                                                                                                                         |
 | `GET /vendors`                     | Vendors by name. Filters: `?type=subcontractor\|supplier\|consultant`, `?status=active\|inactive`, `?stage=<stage>`, `?q=<text>`                                                                                                                                                                                                                                    |
@@ -204,12 +204,12 @@ The API behind the web UI (dashboard, project screen, chat), on `HTTP_PORT` (def
 
 Messages are Markdown. A status message carries `mission` (the agent's goal, state, checklist, and the plan or question it waits on) while the agent works on a goal.
 
-| File               | Responsibility                                                                                              |
-| ------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `server.ts`        | Express app: routes, request checks, the live stream, files                                                 |
-| `output.ts`        | The agent's Output for web chats: Slack layouts become Markdown and actions; one status message per mission |
-| `conversations.ts` | Chat history, saved to `data/conversations/<id>.json`                                                       |
-| `projects.ts`      | Project cards, details and counts, from the same facts the agent reports                                    |
+| File               | Responsibility                                                                                        |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `server.ts`        | Express app: routes, request checks, the live stream, files                                           |
+| `output.ts`        | The agent's Output for web chats: Markdown replies with their buttons; one status message per mission |
+| `conversations.ts` | Chat history, saved to `data/conversations/<id>.json`                                                 |
+| `projects.ts`      | Project cards, details and counts, from the same facts the agent reports                              |
 
 ### Agents — `src/agents/`
 
@@ -247,16 +247,15 @@ Messages are Markdown. A status message carries `mission` (the agent's goal, sta
 | Path                             | Contents                                                                                                                                                                                                                                     |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `data/site-rules/<place>.json`   | Cached site rules research per address, reused for 30 days (1 day if low confidence) (git-ignored)                                                                                                                                           |
-| `data/projects/*.json`           | Ongoing construction projects (currently dummy data): dates, 12 standard stages, assigned vendors, issues with days of delay, inspections, site log                                                                                          |
+| `data/projects/*.json`           | Construction projects (dummy data, plus projects created from designs): dates, 12 standard stages, assigned vendors, issues with days of delay, inspections, site log                                                                        |
 | `data/vendors.json`              | Subcontractors, suppliers and consultants (currently dummy data), with the construction stages each can work on; changed through the vendor API                                                                                              |
 | `data/orders.json`               | Orders from projects to vendors (currently dummy data): line items, needed-by date, status and its history; changed through the order API or the agent                                                                                       |
 | `data/payments.json`             | Client collections (deposit, milestone draws, change orders) and vendor payments (currently dummy data): amount, proposed and actual dates, status; changed through the payment API or the agent                                             |
 | `data/feasibility-defaults.json` | Assumptions for the feasibility report: loan terms, fees, vacancy, verdict thresholds, typical build cost — edit to match how you work                                                                                                       |
 | `data/project-documents.json`    | PDFs posted in a project's chats, filed under that project (git-ignored)                                                                                                                                                                     |
-| `data/slack-sessions.json`       | The bot's conversation memory (git-ignored)                                                                                                                                                                                                  |
+| `data/sessions.json`             | The agent's conversation memory (git-ignored)                                                                                                                                                                                                |
 | `data/missions/<id>.json`        | The agent's missions: goal, Agent SDK session id, checklist, approvals (git-ignored)                                                                                                                                                         |
 | `data/conversations/<id>.json`   | Web chats with all their messages (git-ignored)                                                                                                                                                                                              |
-| `data/digest.json`               | Date of the last daily digest (git-ignored)                                                                                                                                                                                                  |
 | `output/<date>_<address>/`       | One folder per design: `plan.svg/.html/.pdf/.png`, `strategy.json`, `estimate.json` + `materials.*`, `timeline.json` + `timeline.*`, `feasibility.json` + `feasibility.*`, `interior.json` + `interior-*.png` + `interior.pdf` (git-ignored) |
 
 ### External data sources
@@ -281,44 +280,28 @@ Texas does not disclose sale prices, so "sold" comparables use the homes' last a
 - **Python 3** (for the Realtor.com scraper)
 - **[Claude Code](https://docs.claude.com/en/docs/claude-code)** logged in with a Claude subscription: `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in. (Or, with `LLM_BACKEND=ollama`, **[Ollama](https://ollama.com)** with `ollama pull qwen3.5:9b`.)
 - **Google Chrome** (used headless to make PDFs and images; set `CHROME_PATH` if it isn't in `/Applications`)
-- A **Slack workspace** where you can create an app
 
 ### Install
 
 ```bash
 npm install
 npm run setup          # creates .venv and installs homeharvest
-cp .env.example .env   # then fill in the Slack tokens
+cp .env.example .env   # then adjust if needed
 ```
-
-### Create the Slack app
-
-1. At [api.slack.com/apps](https://api.slack.com/apps) create an app **from scratch**.
-2. **Socket Mode**: turn on and create an app-level token with `connections:write` → `SLACK_APP_TOKEN` (`xapp-…`).
-3. **OAuth & Permissions → Bot Token Scopes**: `app_mentions:read`, `chat:write`, `reactions:write`, `files:write`.
-4. **Event Subscriptions**: turn on and subscribe to the bot event `app_mention`.
-5. **Interactivity & Shortcuts**: turn on (needed for the buttons; no URL needed with Socket Mode).
-6. **App Home**: set the display name (e.g. _SuperAgent_) and username (e.g. `superagent`).
-7. **Install to Workspace** → bot token → `SLACK_BOT_TOKEN` (`xoxb-…`).
-8. In Slack, `/invite @superagent` into a channel.
 
 ### Configuration (`.env`)
 
-| Variable                             | Default       | Meaning                                                                                                                                                              |
-| ------------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `HTTP_PORT`                          | `3001`        | Port of the web API; `off` turns it off                                                                                                                              |
-| `CORS_ORIGIN`                        | `*`           | Which web origin may call the API from a browser                                                                                                                     |
-| `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | —             | Slack credentials; without them only the web API runs                                                                                                                |
-| `SLACK_REPLY_MODE`                   | `channel`     | `channel`: reply in the channel, one shared memory per channel · `user`: reply in the channel, a memory per person · `thread`: reply in threads, a memory per thread |
-| `LLM_BACKEND`                        | `claude-code` | `claude-code`: Claude through the Claude Code CLI and the logged-in subscription · `ollama`: a local model through Ollama                                            |
-| `PLANNER_MODEL`                      | `sonnet`      | Claude model that drives the agent (chooses tools for goals). Always Claude, via the Agent SDK, even with `LLM_BACKEND=ollama`                                       |
-| `DESIGN_MODEL`                       | `sonnet`      | Model that plans the site and draws the house. Ollama default: `qwen3.5:9b`                                                                                          |
-| `ESTIMATE_MODEL`                     | `sonnet`      | Model for cost estimates and timelines. Ollama default: `qwen3.5:9b`                                                                                                 |
-| `DESIGN_THINK`                       | `true`        | Let the model reason before drawing (better plans, slower)                                                                                                           |
-| `PLANNER_THINK`                      | `true`        | Let the planner reason before each decision (more accurate answers, a few seconds slower)                                                                            |
-| `DIGEST_CHANNEL`                     | —             | Slack channel id for the daily project digest; empty = no digest                                                                                                     |
-| `DIGEST_TIME`                        | `08:30`       | When to post the digest (HH:MM, this computer's time zone)                                                                                                           |
-| `CHROME_PATH`                        | macOS default | Path to Chrome, if elsewhere                                                                                                                                         |
+| Variable         | Default       | Meaning                                                                                                                        |
+| ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `HTTP_PORT`      | `3001`        | Port of the web API                                                                                                            |
+| `CORS_ORIGIN`    | `*`           | Which web origin may call the API from a browser                                                                               |
+| `LLM_BACKEND`    | `claude-code` | `claude-code`: Claude through the Claude Code CLI and the logged-in subscription · `ollama`: a local model through Ollama      |
+| `PLANNER_MODEL`  | `sonnet`      | Claude model that drives the agent (chooses tools for goals). Always Claude, via the Agent SDK, even with `LLM_BACKEND=ollama` |
+| `DESIGN_MODEL`   | `sonnet`      | Model that plans the site and draws the house. Ollama default: `qwen3.5:9b`                                                    |
+| `ESTIMATE_MODEL` | `sonnet`      | Model for cost estimates and timelines. Ollama default: `qwen3.5:9b`                                                           |
+| `DESIGN_THINK`   | `true`        | Let the model reason before drawing (better plans, slower)                                                                     |
+| `PLANNER_THINK`  | `true`        | Let the planner reason before each decision (more accurate answers, a few seconds slower)                                      |
+| `CHROME_PATH`    | macOS default | Path to Chrome, if elsewhere                                                                                                   |
 
 ### Run
 
@@ -326,9 +309,9 @@ cp .env.example .env   # then fill in the Slack tokens
 npm run dev
 ```
 
-It starts the web API (`Web API on http://localhost:3001`) and, when the Slack tokens are set, connects to Slack. It prints which models it uses, checks that Claude Code is logged in (or Ollama has the models), and resumes any jobs interrupted by the last restart. Tag it in a channel it has been invited to.
+It starts the web API (`Web API on http://localhost:3001`), prints which models it uses, checks that Claude Code is logged in (or Ollama has the models), and resumes any jobs interrupted by the last restart. Then open the web UI and chat with it.
 
-**Claude Code backend.** Each model call runs `claude -p` with all of Claude Code's own tools, settings and MCP servers turned off, in an empty folder, so a Slack message can't make it touch the computer. Usage counts against the logged-in subscription's limits; when they're reached the bot says so until they reset. A subscription is meant for one person's use: for a bot a whole team relies on, an API key is the cleaner route.
+**Claude Code backend.** Each model call runs `claude -p` with all of Claude Code's own tools, settings and MCP servers turned off, in an empty folder, so a chat message can't make it touch the computer. Usage counts against the logged-in subscription's limits; when they're reached SuperAgent says so until they reset. A subscription is meant for one person's use: for an assistant a whole team relies on, an API key is the cleaner route.
 
 **Tip (Ollama only):** Ollama answers one request at a time by default, so quick questions wait while a long design is being drawn. Starting Ollama with `OLLAMA_NUM_PARALLEL=2` lets quick replies run alongside a job (uses more memory). On macOS with the Ollama app: `launchctl setenv OLLAMA_NUM_PARALLEL 2`, then restart Ollama.
 
@@ -339,21 +322,21 @@ npm run typecheck   # TypeScript
 npm run lint        # ESLint
 npm run format      # Prettier
 
-# Try the agent in the terminal, without Slack (uses its own memory in /tmp):
+# Try the agent in the terminal, without the browser (uses its own memory and chats in /tmp):
 node --import tsx src/test-agent.ts "compare the plans for Brass Buttons and Corral Lane"
 node --import tsx src/test-agent.ts --suite                    # a set of goals using quick tools
 node --import tsx src/test-agent.ts "<goal>" --approve         # also click Go (slow jobs really run)
 ```
 
-`src/test-freecad.ts` / `src/floorPlanner.ts` (a FreeCAD floor-plan experiment) and `src/test-architecture.ts` / `src/tools/architecture.ts` (a FLUX image-generation test) are standalone experiments, not part of the bot.
+`src/test-freecad.ts` / `src/floorPlanner.ts` (a FreeCAD floor-plan experiment) and `src/test-architecture.ts` / `src/tools/architecture.ts` (a FLUX image-generation test) are standalone experiments, not part of SuperAgent.
 
 ---
 
 ## Limitations
 
 - **Model quality.** Drawings can still have layout mistakes and cost estimates can be off (much more so on the local 9B model) — the feasibility report flags build costs outside a typical $/sq ft range.
-- **Subscription limits.** On the Claude Code backend, heavy use (several designs in a row) can reach the subscription's usage limit; the bot pauses until it resets.
-- **Austin-first.** Zoning lookups and the Edwards Aquifer check cover Austin, TX; elsewhere the bot uses typical residential defaults and says so.
+- **Subscription limits.** On the Claude Code backend, heavy use (several designs in a row) can reach the subscription's usage limit; SuperAgent pauses until it resets.
+- **Austin-first.** Zoning lookups and the Edwards Aquifer check cover Austin, TX; elsewhere it uses typical residential defaults and says so.
 - **Planning-level data.** Values use asking prices of sold homes, soil comes from a regional survey (not borings), utility capacity isn't public, and FEMA maps can lag local floodplain maps.
-- **Runs on your machine.** The bot works while your machine and `npm run dev` are running (plus Ollama on that backend); jobs run one at a time.
+- **Runs on your machine.** SuperAgent works while your machine and `npm run dev` are running (plus Ollama on that backend); jobs run one at a time.
 - **Dummy project data.** `data/projects/` currently holds sample projects; the format is ready to be fed with real data.

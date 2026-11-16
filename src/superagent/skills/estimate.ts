@@ -7,8 +7,8 @@
  * trade at a time (foundation, framing, roofing, ...), and adds a contingency.
  * It writes estimate.json, materials.md and materials.html into the plan folder.
  *
- * This skill adds what Slack needs on top: progress messages and a PDF of the
- * report (Slack can't show HTML).
+ * This skill adds what the chat needs on top: progress messages and a PDF of
+ * the report.
  */
 import * as costEstimator from "../../agents/costEstimator.ts";
 import { refreshReports } from "../../refreshReports.ts";

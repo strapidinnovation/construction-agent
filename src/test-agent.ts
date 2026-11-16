@@ -1,34 +1,32 @@
 /**
- * Console test for the agent, without Slack. Messages go through the same
- * path as in Slack (handleMessage), and everything the bot would post is
- * printed instead. It uses its own memory files in /tmp, so it never touches
- * the bot's real conversations.
+ * Console test for the agent, without the browser. Each goal runs in a web
+ * conversation exactly as if typed in the chat (handleMessage with the web
+ * Output), and every message the chat would show is printed. It uses its own
+ * memory and conversation files in /tmp, so it never touches real chats.
  *
  *   node --import tsx src/test-agent.ts "compare Brass Buttons and Corral Lane"
  *   node --import tsx src/test-agent.ts "find the best lot under 250k in Austin, TX" --approve
  *   node --import tsx src/test-agent.ts --suite        (a set of goals using quick tools)
  *
- *   node --import tsx src/test-agent.ts --digest       (the scheduled morning digest)
- *
  * --same sends all the goals in ONE conversation (to test follow-ups like "yes, do that").
  * --approve clicks "Go" on proposed plans (slow jobs then really run: minutes each).
  * --answer="..." is sent once as the reply to the agent's first question or
- * plan (to a plan, it's a change request), as if typed in Slack.
+ * plan (to a plan, it's a change request), as if typed in the chat.
  */
 import { mkdirSync } from "node:fs";
 
 // Must be set before the modules that read them are loaded (hence the dynamic imports below).
 process.env.SESSIONS_FILE ??= "/tmp/superagent-test/sessions.json";
 process.env.MISSIONS_DIR ??= "/tmp/superagent-test/missions";
+process.env.CONVERSATIONS_DIR ??= "/tmp/superagent-test/conversations";
 mkdirSync(process.env.MISSIONS_DIR, { recursive: true });
 
 const { handleMessage } = await import("./superagent/superagent.ts");
-const { approveMission, answerMission, settled, startMission } =
-  await import("./superagent/agent/agent.ts");
+const { approveMission, answerMission, settled } = await import("./superagent/agent/agent.ts");
 const { allMissions } = await import("./superagent/agent/missions.ts");
-const { DIGEST_GOAL } = await import("./superagent/agent/schedule.ts");
-type Ctx = import("./superagent/superagent.ts").Ctx;
-type Reply = import("./superagent/slackUi.ts").Reply;
+const { createConversation, subscribe } = await import("./web/conversations.ts");
+const { webCtx, webKey } = await import("./web/output.ts");
+type ChatMessage = import("./web/conversations.ts").ChatMessage;
 
 const args = process.argv.slice(2);
 const approve = args.includes("--approve");
@@ -42,55 +40,36 @@ const SUITE = [
   "find me a good lot to build on and check if it floods",
 ];
 
-/** Readable text of a Slack reply: its sections, without the layout JSON. */
-function show(reply: Reply): string {
-  const parts = (reply.blocks ?? []).flatMap((b) => {
-    if (b.type === "section") return [b.text?.text ?? "", ...(b.fields ?? []).map((f) => f.text)];
-    if (b.type === "context")
-      return b.elements.map((e) => ("text" in e ? `(${e.text})` : "")).filter(Boolean);
-    if (b.type === "actions")
-      return [`[${b.elements.map((e) => ("text" in e && e.text ? e.text.text : "")).join("] [")}]`];
-    return [];
-  });
-  return (parts.length ? parts.join("\n") : reply.text).replace(/^/gm, "    ");
-}
+const indent = (text: string) => text.replace(/^/gm, "    ");
 
-function consoleCtx(key: string): Ctx {
-  const output = (label: string) => {
-    let last = "";
-    return {
-      async reply(r: Reply) {
-        console.log(`\n  ${label} REPLY:\n${show(r)}`);
-      },
-      async status(text: string) {
-        // Only print the line that changed, so the log stays readable.
-        const now = text.split("\n").at(-1) ?? "";
-        if (now !== last) console.log(`  ${label} status: ${now}`);
-        last = now;
-      },
-      async upload(files: { path: string }[], comment: string) {
-        console.log(`  ${label} UPLOAD: ${files.map((f) => f.path).join(", ")} (${comment})`);
-      },
-    };
-  };
-  let jobs = 0;
-  return {
-    key,
-    user: "UTEST",
-    out: output("[agent]"),
-    makeOutput: () => output(`[job ${++jobs}]`),
+/** Print a chat message as it appears or changes; status lines only when their last line changes. */
+function printer(): (m: ChatMessage) => void {
+  const lastStatus = new Map<string, string>();
+  return (m) => {
+    if (m.role !== "agent") return;
+    if (m.kind === "status") {
+      const now = m.text.split("\n").at(-1) ?? "";
+      if (lastStatus.get(m.id) !== now) console.log(`  status: ${now}`);
+      lastStatus.set(m.id, now);
+    } else if (m.kind === "files") {
+      console.log(`  FILES: ${(m.files ?? []).map((f) => f.name).join(", ")}\n${indent(m.text)}`);
+    } else {
+      const buttons = m.actions?.length
+        ? `\n    [${m.actions.map((a) => a.label).join("] [")}]`
+        : "";
+      console.log(`\n  REPLY:\n${indent(m.text)}${buttons}`);
+    }
   };
 }
 
-async function runGoal(goal: string, key: string, digest = false): Promise<void> {
+async function runGoal(goal: string, conversationId: string): Promise<void> {
   console.log(`\n${"=".repeat(100)}\nGOAL: ${goal}\n${"=".repeat(100)}`);
-  const ctx = consoleCtx(key);
+  const ctx = webCtx(conversationId);
   const started = Date.now();
-  if (digest) await startMission(ctx, goal, { unattended: true });
-  else await handleMessage(ctx, goal);
+  await handleMessage(ctx, goal);
 
   const mission = allMissions()
-    .filter((m) => m.key === key && Date.parse(m.createdAt) >= started)
+    .filter((m) => m.key === webKey(conversationId) && Date.parse(m.createdAt) >= started)
     .at(-1);
   if (!mission) {
     console.log("\n  (Answered without the agent: help or cancel.)");
@@ -117,19 +96,22 @@ async function runGoal(goal: string, key: string, digest = false): Promise<void>
   );
 }
 
-const run = Date.now().toString(36);
-if (args.includes("--digest")) {
-  await runGoal(DIGEST_GOAL, `TEST-${run}-digest`, true);
-  process.exit(0);
-}
 const goals = args.includes("--suite") ? SUITE : args.filter((a) => !a.startsWith("--"));
 if (!goals.length) {
   console.log(
-    'Usage: node --import tsx src/test-agent.ts "<goal>" ["<goal>" ...] [--same] [--approve] [--answer="..."] | --suite | --digest',
+    'Usage: node --import tsx src/test-agent.ts "<goal>" ["<goal>" ...] [--same] [--approve] [--answer="..."] | --suite',
   );
   process.exit(1);
 }
 const same = args.includes("--same");
-for (const [i, goal] of goals.entries())
-  await runGoal(goal, same ? `TEST-${run}` : `TEST-${run}-${i}`);
+let conversation = createConversation();
+let unsubscribe = subscribe(conversation.id, printer());
+for (const [i, goal] of goals.entries()) {
+  if (i > 0 && !same) {
+    unsubscribe();
+    conversation = createConversation();
+    unsubscribe = subscribe(conversation.id, printer());
+  }
+  await runGoal(goal, conversation.id);
+}
 process.exit(0);

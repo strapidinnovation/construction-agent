@@ -120,6 +120,7 @@ export function projectCounts() {
     "at-risk": 0,
     "on-hold": 0,
     "on-track": 0,
+    planning: 0,
     completed: 0,
   };
   for (const p of all) byStatus[p.status]++;
