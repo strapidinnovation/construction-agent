@@ -6,6 +6,22 @@
  *   GET    /projects?filter=all|delayed|behind|attention|on-hold&completed=true
  *   GET    /projects/summary
  *   GET    /projects/:id                 (an id, or a name like "river bend")
+ *   GET    /projects/:id/documents       (the PDFs made for it, newest first; open them at their url)
+ *   GET    /vendors?type=&status=&stage=&q=
+ *   GET    /vendors/:id
+ *   POST   /vendors                      { name, type, trade, stages, contact?, ... }
+ *   PATCH  /vendors/:id                  (only the fields given change)
+ *   DELETE /vendors/:id
+ *   GET    /orders?projectId=&vendorId=&status=&open=true&q=
+ *   GET    /orders/:id                   ("PO-1012")
+ *   POST   /orders                       { projectId, vendorId, title, items, stage?, neededBy?, notes? }
+ *   PATCH  /orders/:id                   (only the fields given change; status only moves forward)
+ *   DELETE /orders/:id                   (only while "created"; cancel it after that)
+ *   GET    /payments?projectId=&vendorId=&kind=&state=&q=   (with pending / overdue / completed totals)
+ *   GET    /payments/:id                 ("PMT-1012")
+ *   POST   /payments                     { kind, projectId, vendorId?, title, amountUsd, proposedDate, ... }
+ *   PATCH  /payments/:id                 (only the fields given change)
+ *   DELETE /payments/:id                 (only while pending)
  *   GET    /conversations                (chat sidebar, newest first)
  *   POST   /conversations                { projectId? }
  *   GET    /conversations/:id            (with every message)
@@ -24,6 +40,7 @@
  * same user (WEB_USER).
  */
 import express, { type ErrorRequestHandler, type Request, type Response } from "express";
+import { join } from "node:path";
 import { z } from "zod";
 import { answerMission, approveMission, cancelMission } from "../superagent/agent/agent.ts";
 import {
@@ -37,7 +54,48 @@ import {
   MISSION_CANCEL_BUTTON,
   MISSION_GO_BUTTON,
 } from "../superagent/agent/missionUi.ts";
-import { PROJECT_FILTERS } from "../superagent/skills/projects.ts";
+import {
+  createOrder,
+  deleteOrder,
+  getOrder,
+  listOrders,
+  ORDER_STATUSES,
+  OrderError,
+  OrderInput,
+  OrderPatch,
+  orderView,
+  orderViews,
+  updateOrder,
+} from "../orders.ts";
+import {
+  createPayment,
+  deletePayment,
+  getPayment,
+  listPayments,
+  PAYMENT_KINDS,
+  PAYMENT_STATES,
+  PaymentError,
+  PaymentInput,
+  PaymentPatch,
+  paymentSummary,
+  paymentView,
+  paymentViews,
+  updatePayment,
+} from "../payments.ts";
+import { OUTPUT_DIR, projectDocuments } from "../projectDocuments.ts";
+import { PROJECT_FILTERS, STAGES } from "../superagent/skills/projects.ts";
+import {
+  createVendor,
+  deleteVendor,
+  getVendor,
+  listVendors,
+  updateVendor,
+  VENDOR_STATUSES,
+  VENDOR_TYPES,
+  VendorError,
+  VendorInput,
+  VendorPatch,
+} from "../vendors.ts";
 import {
   CANCEL_BUTTON,
   DESIGN_BUTTON,
@@ -68,7 +126,7 @@ import {
   upsertMessage,
   type Conversation,
 } from "./conversations.ts";
-import { fileForToken, webCtx, webKey, WEB_USER } from "./output.ts";
+import { fileForToken, fileUrl, webCtx, webKey, WEB_USER } from "./output.ts";
 import { lookupProject, projectCounts, projectDetail, projectList } from "./projects.ts";
 
 const HEARTBEAT_MS = 15_000;
@@ -231,7 +289,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use((req, res, next) => {
   res.set({
     "access-control-allow-origin": CORS_ORIGIN,
-    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
     "access-control-allow-headers": "content-type",
   });
   if (req.method === "OPTIONS") return void res.sendStatus(204);
@@ -261,6 +319,139 @@ app.get("/projects/:id", (req, res) => {
   if (found.kind === "not-found")
     throw new HttpError(404, `No project "${id}".`, { names: found.names });
   res.json(projectDetail(found.project));
+});
+
+app.get("/projects/:id/documents", (req, res) => {
+  const found = lookupProject(req.params.id);
+  if (found.kind !== "found") throw new HttpError(404, `No project "${req.params.id}".`);
+  const documents = projectDocuments(found.project).map((d) => ({
+    ...d,
+    url: fileUrl(join(OUTPUT_DIR, d.path)),
+  }));
+  res.json({ documents });
+});
+
+const VendorQuery = z.object({
+  type: z.enum(VENDOR_TYPES).optional(),
+  status: z.enum(VENDOR_STATUSES).optional(),
+  stage: z.enum(STAGES).optional(),
+  q: z.string().trim().min(1).optional(),
+});
+
+app.get("/vendors", (req, res) => {
+  const query = VendorQuery.safeParse(req.query);
+  if (!query.success) {
+    const first = query.error.issues[0];
+    throw new HttpError(400, `${first?.path.join(".")}: ${first?.message}`);
+  }
+  res.json({ vendors: listVendors(query.data) });
+});
+
+app.get("/vendors/:id", (req, res) => {
+  const vendor = getVendor(req.params.id);
+  if (!vendor) throw new HttpError(404, `No vendor ${req.params.id}.`);
+  res.json(vendor);
+});
+
+app.post("/vendors", async (req, res) => {
+  res.status(201).json(await createVendor(body(req, VendorInput)));
+});
+
+app.patch("/vendors/:id", async (req, res) => {
+  res.json(await updateVendor(req.params.id, body(req, VendorPatch)));
+});
+
+app.delete("/vendors/:id", async (req, res) => {
+  await deleteVendor(req.params.id);
+  res.json({ deleted: req.params.id });
+});
+
+const OrderQuery = z.object({
+  projectId: z.string().trim().min(1).optional(),
+  vendorId: z.string().trim().min(1).optional(),
+  status: z.enum(ORDER_STATUSES).optional(),
+  open: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
+  q: z.string().trim().min(1).optional(),
+});
+
+function orderOr404(id: string) {
+  const order = getOrder(id);
+  if (!order) throw new HttpError(404, `No order ${id}.`);
+  return order;
+}
+
+app.get("/orders", (req, res) => {
+  const query = OrderQuery.safeParse(req.query);
+  if (!query.success) {
+    const first = query.error.issues[0];
+    throw new HttpError(400, `${first?.path.join(".")}: ${first?.message}`);
+  }
+  res.json({ orders: orderViews(listOrders(query.data)) });
+});
+
+app.get("/orders/:id", (req, res) => {
+  res.json(orderView(orderOr404(req.params.id)));
+});
+
+app.post("/orders", async (req, res) => {
+  res.status(201).json(orderView(await createOrder(body(req, OrderInput))));
+});
+
+app.patch("/orders/:id", async (req, res) => {
+  res.json(orderView(await updateOrder(req.params.id, body(req, OrderPatch))));
+});
+
+app.delete("/orders/:id", async (req, res) => {
+  const order = await deleteOrder(req.params.id);
+  res.json({ deleted: order.id });
+});
+
+const PaymentQuery = z.object({
+  projectId: z.string().trim().min(1).optional(),
+  vendorId: z.string().trim().min(1).optional(),
+  kind: z.enum(PAYMENT_KINDS).optional(),
+  state: z.enum(PAYMENT_STATES).optional(),
+  q: z.string().trim().min(1).optional(),
+});
+
+function paymentOr404(id: string) {
+  const payment = getPayment(id);
+  if (!payment) throw new HttpError(404, `No payment ${id}.`);
+  return payment;
+}
+
+app.get("/payments", (req, res) => {
+  const query = PaymentQuery.safeParse(req.query);
+  if (!query.success) {
+    const first = query.error.issues[0];
+    throw new HttpError(400, `${first?.path.join(".")}: ${first?.message}`);
+  }
+  const { state, ...rest } = query.data;
+  const all = listPayments(rest);
+  res.json({
+    payments: paymentViews(state ? listPayments(query.data) : all),
+    summary: paymentSummary(all),
+  });
+});
+
+app.get("/payments/:id", (req, res) => {
+  res.json(paymentView(paymentOr404(req.params.id)));
+});
+
+app.post("/payments", async (req, res) => {
+  res.status(201).json(paymentView(await createPayment(body(req, PaymentInput))));
+});
+
+app.patch("/payments/:id", async (req, res) => {
+  res.json(paymentView(await updatePayment(req.params.id, body(req, PaymentPatch))));
+});
+
+app.delete("/payments/:id", async (req, res) => {
+  const payment = await deletePayment(req.params.id);
+  res.json({ deleted: payment.id });
 });
 
 app.get("/conversations", (_req, res) => {
@@ -313,6 +504,12 @@ app.use((req) => {
 
 const onError: ErrorRequestHandler = (err: unknown, _req, res, next) => {
   if (res.headersSent) return next(err);
+  if (err instanceof VendorError)
+    return void res.status(err.kind === "not-found" ? 404 : 409).json({ error: err.message });
+  if (err instanceof OrderError || err instanceof PaymentError) {
+    const status = { "not-found": 404, "bad-reference": 400, "not-allowed": 409 }[err.kind];
+    return void res.status(status).json({ error: err.message });
+  }
   if (err instanceof HttpError)
     return void res.status(err.status).json({ error: err.message, ...err.extra });
   // Bad JSON or a body over the limit, from express.json().

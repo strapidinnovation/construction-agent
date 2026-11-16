@@ -140,6 +140,18 @@ const ProjectFile = z.object({
     }),
   ),
   updates: z.array(z.object({ date: isoDate, author: z.string(), note: z.string() })),
+  /** The vendors working on the project (ids in data/vendors.json) and the stages each works on. */
+  vendors: z
+    .array(
+      z.object({
+        vendorId: z.string(),
+        stages: z.array(stage).min(1),
+        /** What they do on this project. */
+        scope: z.string(),
+        contractUsd: z.number().nullish(),
+      }),
+    )
+    .default([]),
 });
 export type ProjectFile = z.infer<typeof ProjectFile>;
 export type Issue = ProjectFile["issues"][number];
@@ -174,6 +186,24 @@ export type Project = {
   openIssues: Issue[];
   /** The next inspection on the calendar, if any. */
   nextInspection?: ProjectFile["inspections"][number];
+  /** Each vendor's work on the project, with its status and dates worked out from the stages. */
+  assignments: Assignment[];
+};
+
+/**
+ * - done:     every stage they work on is done,
+ * - working:  one of their stages is in progress,
+ * - on-hold:  one of their stages is in progress, but the project is paused,
+ * - upcoming: their next stage hasn't started (they may have finished earlier ones).
+ */
+export type AssignmentStatus = "done" | "working" | "on-hold" | "upcoming";
+
+export type Assignment = ProjectFile["vendors"][number] & {
+  status: AssignmentStatus;
+  /** First day on site (actual if started, else planned). */
+  start: string;
+  /** Last day on site (actual if finished, else forecast or planned). */
+  end: string;
 };
 
 /** Days from date a to date b (both "YYYY-MM-DD"). */
@@ -224,6 +254,26 @@ function compute(data: ProjectFile): Project {
     .filter((i) => i.result === "scheduled" && i.date >= today())
     .sort((a, b) => a.date.localeCompare(b.date))[0];
 
+  const assignments = data.vendors.map((v): Assignment => {
+    const stages = data.stages.filter((s) => v.stages.includes(s.stage));
+    return {
+      ...v,
+      status: stages.every((s) => s.status === "done")
+        ? "done"
+        : stages.some((s) => s.status === "in-progress")
+          ? data.onHold
+            ? "on-hold"
+            : "working"
+          : "upcoming",
+      start: stages.map((s) => s.actualStart ?? s.plannedStart).sort()[0] ?? data.dates.start,
+      end:
+        stages
+          .map((s) => s.actualEnd ?? s.forecastEnd ?? s.plannedEnd)
+          .sort()
+          .at(-1) ?? data.dates.plannedFinish,
+    };
+  });
+
   return {
     data,
     status,
@@ -235,6 +285,7 @@ function compute(data: ProjectFile): Project {
     delayCauses,
     openIssues: data.issues.filter((i) => i.status === "open"),
     nextInspection,
+    assignments,
   };
 }
 

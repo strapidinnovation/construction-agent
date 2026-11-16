@@ -113,6 +113,50 @@
       "percent": 0
     }
   ],
+  "vendors": [
+    {
+      "vendorId": "bluebonnet-engineering",
+      "stages": ["pre-construction", "permitting", "foundation"],
+      "scope": "Drainage plan and foundation design",
+      "contractUsd": 28000
+    },
+    {
+      "vendorId": "hill-country-earthworks",
+      "stages": ["site-prep"],
+      "scope": "Clearing and grading",
+      "contractUsd": 39000
+    },
+    {
+      "vendorId": "capitol-concrete",
+      "stages": ["foundation"],
+      "scope": "Slabs for the three townhomes",
+      "contractUsd": 104000
+    },
+    {
+      "vendorId": "lone-star-framing",
+      "stages": ["framing", "dry-in"],
+      "scope": "Framing and sheathing",
+      "contractUsd": 126000
+    },
+    {
+      "vendorId": "central-texas-truss",
+      "stages": ["framing"],
+      "scope": "Lumber package and roof trusses",
+      "contractUsd": 44000
+    },
+    {
+      "vendorId": "summit-roofing",
+      "stages": ["dry-in"],
+      "scope": "Shingle roofs",
+      "contractUsd": 36000
+    },
+    {
+      "vendorId": "clearview-windows",
+      "stages": ["dry-in"],
+      "scope": "Windows and exterior doors",
+      "contractUsd": 27000
+    }
+  ],
   "issues": [
     {
       "id": "RB-01",

@@ -9,11 +9,13 @@ import {
   listProjects,
   loadProjects,
   stageLabel,
+  STAGES,
   statusText,
   type Project,
   type ProjectFilter,
   type ProjectStatus,
 } from "../superagent/skills/projects.ts";
+import { getVendor } from "../vendors.ts";
 
 export function projectSummary(p: Project) {
   const d = p.data;
@@ -36,6 +38,7 @@ export function projectSummary(p: Project) {
     doneStages: p.doneStages,
     totalStages: d.stages.length,
     openIssueCount: p.openIssues.length,
+    vendorCount: p.assignments.length,
     nextInspection: p.nextInspection ?? null,
     onHold: d.onHold ?? null,
     dates: d.dates,
@@ -43,8 +46,45 @@ export function projectSummary(p: Project) {
   };
 }
 
+/** A project's vendors with their details from the vendor list (vendor is null if it was removed from it). */
+function projectVendors(p: Project) {
+  const stageStatus = new Map(p.data.stages.map((s) => [s.stage, s.status]));
+  return p.assignments.map((a) => {
+    const v = getVendor(a.vendorId);
+    return {
+      vendorId: a.vendorId,
+      vendor: v
+        ? {
+            id: v.id,
+            name: v.name,
+            type: v.type,
+            trade: v.trade,
+            contact: v.contact,
+            rating: v.rating,
+            status: v.status,
+            insuranceExpires: v.insuranceExpires,
+          }
+        : null,
+      scope: a.scope,
+      contractUsd: a.contractUsd ?? null,
+      status: a.status,
+      start: a.start,
+      end: a.end,
+      stages: a.stages.map((s) => ({
+        stage: s,
+        label: stageLabel(s),
+        status: stageStatus.get(s) ?? null,
+      })),
+    };
+  });
+}
+
 export function projectDetail(p: Project) {
   const d = p.data;
+  const vendorNames = (stage: (typeof STAGES)[number]) =>
+    p.assignments
+      .filter((a) => a.stages.includes(stage))
+      .map((a) => ({ id: a.vendorId, name: getVendor(a.vendorId)?.name ?? a.vendorId }));
   return {
     ...projectSummary(p),
     aliases: d.aliases,
@@ -52,7 +92,12 @@ export function projectDetail(p: Project) {
     scope: d.scope,
     team: d.team,
     currentStageLateDays: p.currentStageLateDays,
-    stages: d.stages.map((s) => ({ ...s, label: stageLabel(s.stage) })),
+    stages: d.stages.map((s) => ({
+      ...s,
+      label: stageLabel(s.stage),
+      vendors: vendorNames(s.stage),
+    })),
+    vendors: projectVendors(p),
     delayCauses: p.delayCauses,
     openIssues: p.openIssues,
     issues: d.issues,

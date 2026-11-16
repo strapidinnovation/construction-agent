@@ -111,6 +111,44 @@
       "percent": 0
     }
   ],
+  "vendors": [
+    {
+      "vendorId": "eastside-design-studio",
+      "stages": ["pre-construction", "permitting"],
+      "scope": "Architecture and permit drawings",
+      "contractUsd": 32000
+    },
+    {
+      "vendorId": "bluebonnet-engineering",
+      "stages": ["pre-construction", "foundation"],
+      "scope": "Pier foundation design and the rock drilling plan",
+      "contractUsd": 18000
+    },
+    {
+      "vendorId": "hill-country-earthworks",
+      "stages": ["site-prep", "foundation"],
+      "scope": "Clearing, grading and drilling piers through limestone",
+      "contractUsd": 46000
+    },
+    {
+      "vendorId": "capitol-concrete",
+      "stages": ["foundation"],
+      "scope": "Pier and beam foundation",
+      "contractUsd": 74000
+    },
+    {
+      "vendorId": "lone-star-framing",
+      "stages": ["framing", "dry-in"],
+      "scope": "Framing and sheathing",
+      "contractUsd": 88000
+    },
+    {
+      "vendorId": "stonecrest-masonry",
+      "stages": ["exterior"],
+      "scope": "Limestone veneer and siding",
+      "contractUsd": 61000
+    }
+  ],
   "issues": [
     {
       "id": "GT-01",

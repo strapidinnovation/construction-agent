@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLANNER_MODEL } from "../../llm.ts";
 import { cancel } from "../queue.ts";
-import { getSession, recentHistory, threadSummary, updateSession } from "../sessions.ts";
+import { getSession, isWebKey, recentHistory, threadSummary, updateSession } from "../sessions.ts";
 import { errorReply } from "../slackUi.ts";
 import type { Ctx } from "../superagent.ts";
 import {
@@ -49,7 +49,7 @@ import {
   saveMission,
   type Mission,
 } from "./missions.ts";
-import { toolsFor, type AgentTool, type ToolOutcome } from "./tools.ts";
+import { settlePendingChange, toolsFor, type AgentTool, type ToolOutcome } from "./tools.ts";
 
 /** How many model turns one mission may use before it must answer. */
 const MAX_MODEL_CALLS = 25;
@@ -79,11 +79,13 @@ Your tools are named mcp__superagent__<name>; below they are called by <name>.
 What you can do: find land for sale (any US city), check site risks (flood, soil, aquifer, utilities), research what
 can legally be built on a lot (zoning, allowed housing types, setbacks, state laws), design houses
 on a lot, furnish them in 3D (a top view of every floor), estimate build costs, plan construction timelines, assess
-feasibility (profit if sold, yield if rented), compare plans, and report on the company's ongoing construction projects.
+feasibility (profit if sold, yield if rented), compare plans, and report on the company's ongoing construction projects
+(including the documents made for them).
 
 How to work:
 1. Work out what the message needs. Gather facts with the QUICK tools: search_land, check_site, list_saved_plans,
-   compare_plans, conversation_status, list_projects, project_details. They take seconds; use them as needed.
+   compare_plans, conversation_status, list_projects, project_details, list_project_documents,
+   share_project_documents. They take seconds; use them as needed.
    research_site_rules needs no approval but takes 1-8 minutes per new property (cached after), so call it only
    for the lots the user asks about, not every search result. design_house already researches the rules itself.
    Some messages need no tool at all: a greeting, or a question your earlier answer already covers.
@@ -109,6 +111,9 @@ Recipes (adapt them to the goal):
   even if it isn't a known listing). Mention the confidence and any warnings in the answer.
 - "Compare plans we already have": compare_plans (list_saved_plans first if you don't know the names).
 - "Which projects need attention / why are they late": list_projects, then project_details on each relevant one.
+- "Send me / show me / where is the plan (estimate, timeline, report) for <project>": list_project_documents, then
+  share_project_documents with the ones asked for (newest of a kind unless they name another). If there is none,
+  say so and offer to make it (the project's street address is the property).
 - "What have we done / what are you working on / is it still running": conversation_status.
 6. To compare properties that have plans, use compare_plans: it shows a ranked table to the user and gives you the ranking.
 7. Name properties by street address exactly as the tools return them (e.g. "3218 Brass Buttons Trl").
@@ -124,6 +129,29 @@ Recipes (adapt them to the goal):
    when they already contain what is asked, and be honest about what they were based on; otherwise call tools for
    the things they name.`;
 
+/** Added for web chats, the only place the vendor, order and payment tools are offered. */
+const VENDORS = `
+Vendors, orders and payments (this chat only): you can also manage the builder's vendors (subcontractors, suppliers,
+consultants), each with the construction stages it can work on; orders: what the builder orders from a vendor for
+a project (numbered like PO-1012, with line items, a total and a status: created, sent, confirmed, fulfilled or
+cancelled); and payments (numbered like PMT-1012): client collections (the client's deposit, milestone draws and
+change orders) and vendor payments, each with an amount, a proposed date and, once paid, an actual date. A payment is
+pending, overdue (pending past its proposed date) or completed.
+- list_vendors, vendor_details, list_orders, order_details and list_payments are QUICK tools: use them freely ("who
+  can do framing?", "which orders are overdue?", "what is the client behind on at Corral Lane?", "what do we owe
+  vendors this month?"). list_payments also gives pending, overdue and completed totals and the net cash.
+- create_vendor, update_vendor, delete_vendor, create_order, update_order, delete_order, create_payment,
+  update_payment and delete_payment never save anything themselves: they show the change to the user with Yes / No
+  buttons and pause. Code saves it only if the user says yes, and the next message tells you whether it was saved.
+  Never say a change is saved before that message says so.
+- A new vendor needs a name, type, trade and at least one stage. A new order needs the project, vendor, a title and
+  line items with quantity, unit and unit price. A new payment needs the kind, project, title, amount and proposed
+  date (and the vendor for a vendor payment). Call ask_user for anything missing; never make up prices or amounts.
+- Make one change per call. To stop using a vendor, prefer update_vendor with status "inactive" over deleting it.
+  An order's status only moves forward; once sent, cancel it (update_order status "cancelled") instead of deleting it.
+  "We got the draw" or "we paid them" is update_payment with status "completed" (the actual date is today unless the
+  user names one); find the payment with list_payments first.`;
+
 /**
  * The system prompt, fixed for the whole mission: the SDK records it with the
  * session, so anything that changes later (e.g. approved steps) goes into the
@@ -132,6 +160,7 @@ Recipes (adapt them to the goal):
 function systemPrompt(m: Mission): string {
   return [
     SYSTEM,
+    ...(isWebKey(m.key) ? [VENDORS] : []),
     "",
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
     `What happened in this conversation before the goal:\n${threadSummary(getSession(m.key))}`,
@@ -179,6 +208,13 @@ const toolReply = (outcome: ToolOutcome): ToolReply => ({
 /** One tool call at a time per mission (the model may ask for several at once). */
 const toolQueue = new Map<string, Promise<unknown>>();
 
+/**
+ * Missions whose current turn was ended by a pausing tool (propose_plan,
+ * ask_user, a vendor change). The loop can't tell from the mission's state:
+ * the user may answer in the seconds the turn takes to end.
+ */
+const pausedTurns = new Set<string>();
+
 /** Run one tool call: checklist line, repeat guard, the tool itself, and its result for the model. */
 async function callTool(ctx: Ctx, m: Mission, t: AgentTool, args: unknown): Promise<ToolReply> {
   const call = `${t.name} ${JSON.stringify(args)}`;
@@ -208,7 +244,8 @@ async function callTool(ctx: Ctx, m: Mission, t: AgentTool, args: unknown): Prom
   }
   step.text = outcome.done ?? step.text;
   // A paused step stays "running" until the user answers (see resume).
-  if (!outcome.pause) step.state = outcome.failed ? "failed" : "done";
+  if (outcome.pause) pausedTurns.add(m.id);
+  else step.state = outcome.failed ? "failed" : "done";
   await saveMission(m);
   if (m.state === "running") await status("Deciding what to do next…");
   else await status();
@@ -322,13 +359,16 @@ async function work(ctx: Ctx, id: string, firstPrompt: string): Promise<void> {
 
   let prompt = firstPrompt;
   for (let nudges = 0; ; nudges++) {
+    pausedTurns.delete(m.id);
     const { text, outOfTurns } = await turn(ctx, m, prompt);
     if ((m.state as string) === "cancelled") {
       await ctx.out.status(missionStatusText(m, ":octagonal_sign: Cancelled."));
       return;
     }
-    // propose_plan / ask_user ended the turn: wait for the user.
-    if (m.state !== "running") return;
+    // A pausing tool ended the turn: wait for the user. Their answer may
+    // already have set the mission running again while the turn was ending;
+    // drive() then continues with it once this loop returns.
+    if (pausedTurns.delete(m.id) || m.state !== "running") return;
 
     if (outOfTurns) {
       const wrapUp = await turn(
@@ -419,6 +459,7 @@ async function resume(ctx: Ctx, m: Mission, prompt: string, stepText: string): P
   m.state = "running";
   m.pendingPlan = undefined;
   m.pendingQuestion = undefined;
+  m.pendingChange = undefined;
   m.lastCall = undefined;
   await saveMission(m);
   void drive(ctx, m.id, prompt);
@@ -455,6 +496,11 @@ export async function answerMission(ctx: Ctx, id: string, text: string): Promise
       `The user did not approve the plan yet. They said: "${text}"\nAdjust the plan to what they said and call propose_plan again, or answer them if no slow work is needed any more.`,
       `You asked for changes: "${text}"`,
     );
+  if (m.state === "waiting-answer" && m.pendingChange) {
+    // A vendor change: code makes it (or drops it) before the model hears the answer.
+    const { prompt, step } = await settlePendingChange(m, text);
+    return resume(ctx, m, prompt, step);
+  }
   if (m.state === "waiting-answer")
     return resume(ctx, m, `The user answered: "${text}"`, `You answered: "${text}"`);
 }

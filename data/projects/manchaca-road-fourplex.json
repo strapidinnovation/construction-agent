@@ -112,6 +112,38 @@
       "percent": 0
     }
   ],
+  "vendors": [
+    {
+      "vendorId": "eastside-design-studio",
+      "stages": ["pre-construction", "permitting"],
+      "scope": "Architecture and permit drawings for the fourplex",
+      "contractUsd": 54000
+    },
+    {
+      "vendorId": "bluebonnet-engineering",
+      "stages": ["pre-construction", "permitting", "site-prep"],
+      "scope": "Civil plans, drainage and utility layout",
+      "contractUsd": 36000
+    },
+    {
+      "vendorId": "permitpro-expediting",
+      "stages": ["permitting"],
+      "scope": "Permit expediting",
+      "contractUsd": 9000
+    },
+    {
+      "vendorId": "hill-country-earthworks",
+      "stages": ["site-prep"],
+      "scope": "Clearing, grading and utility trenching",
+      "contractUsd": 58000
+    },
+    {
+      "vendorId": "capitol-concrete",
+      "stages": ["foundation"],
+      "scope": "Slabs for the four units",
+      "contractUsd": 142000
+    }
+  ],
   "issues": [
     {
       "id": "MR-01",

@@ -151,6 +151,10 @@ export function conversationKey(
   return channel;
 }
 
+/** Web chat conversations (src/web/) use the key "web:<conversation id>". */
+export const WEB_KEY_PREFIX = "web:";
+export const isWebKey = (key: string) => key.startsWith(WEB_KEY_PREFIX);
+
 /** The reverse of conversationKey: where to post for a key (threadTs only in thread mode). */
 export function parseKey(key: string): { channel: string; threadTs?: string } {
   const [channel = "", rest] = key.split(":", 2);

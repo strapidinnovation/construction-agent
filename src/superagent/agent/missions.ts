@@ -23,6 +23,9 @@ import { join } from "node:path";
 import type { Listing } from "../../agents/landSearch.ts";
 import { PROJECT_ROOT } from "../../paths.ts";
 import type { JobKind } from "../queue.ts";
+import type { OrderChange } from "../../orders.ts";
+import type { PaymentChange } from "../../payments.ts";
+import type { VendorChange } from "../../vendors.ts";
 import type { LastAnswer } from "../sessions.ts";
 
 const DIR = process.env.MISSIONS_DIR || join(PROJECT_ROOT, "data", "missions");
@@ -79,6 +82,8 @@ export type Mission = {
   pendingPlan?: { counts: JobCounts; minutes: number };
   /** The question waiting for an answer, with the options offered as buttons. */
   pendingQuestion?: { question: string; options: string[] };
+  /** A vendor, order or payment change waiting for the user's yes; code makes it only after they confirm. */
+  pendingChange?: VendorChange | OrderChange | PaymentChange;
   /** The slow job running for this mission right now (to cancel it with the mission). */
   inflight?: { jobId: string; kind: JobKind };
   /** How many model turns the mission has used (each turn decides the next tool calls). */

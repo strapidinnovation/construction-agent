@@ -9,14 +9,17 @@
  *   - buttons become actions the UI can render and post back (server.ts),
  *   - the status message is one chat message edited in place, and when it
  *     belongs to an agent mission it carries the mission's live checklist,
- *   - uploaded files get a download link (/files/<token>).
+ *   - uploaded files get a download link (/files/<token>), and PDFs posted in
+ *     a chat opened from a project are filed under that project.
  */
 import type { KnownBlock } from "@slack/types";
 import { existsSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { PROJECT_ROOT } from "../paths.ts";
+import { fileDocuments } from "../projectDocuments.ts";
 import { getMission } from "../superagent/agent/missions.ts";
 import { MISSION_CANCEL_BUTTON } from "../superagent/agent/missionUi.ts";
+import { isWebKey, WEB_KEY_PREFIX } from "../superagent/sessions.ts";
 import { CANCEL_BUTTON, type Reply } from "../superagent/slackUi.ts";
 import type { Ctx, Output } from "../superagent/superagent.ts";
 import {
@@ -31,12 +34,11 @@ import {
 /** Everyone using the web UI is the same person (no logins in this test setup). */
 export const WEB_USER = "web";
 
-const KEY_PREFIX = "web:";
+export { isWebKey };
 
 /** The agent's memory key for a web conversation; keeps web chats apart from Slack ones. */
-export const webKey = (conversationId: string) => `${KEY_PREFIX}${conversationId}`;
-export const isWebKey = (key: string) => key.startsWith(KEY_PREFIX);
-export const conversationIdOf = (key: string) => key.slice(KEY_PREFIX.length);
+export const webKey = (conversationId: string) => `${WEB_KEY_PREFIX}${conversationId}`;
+export const conversationIdOf = (key: string) => key.slice(WEB_KEY_PREFIX.length);
 
 const EMOJI: Record<string, string> = {
   arrows_counterclockwise: "🔄",
@@ -224,6 +226,8 @@ export function webOutput(conversationId: string, missionId?: string): Output {
       if (mission) dropStaleButtons(conversationId, mission);
     },
     async upload(files, comment) {
+      const projectId = getConversation(conversationId)?.projectId;
+      if (projectId) await fileDocuments(projectId, conversationId, files);
       upsertMessage(
         conversationId,
         agentMessage({

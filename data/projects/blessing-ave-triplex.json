@@ -107,6 +107,50 @@
       "percent": 0
     }
   ],
+  "vendors": [
+    {
+      "vendorId": "eastside-design-studio",
+      "stages": ["pre-construction", "permitting"],
+      "scope": "Architecture and permit drawings for the three homes",
+      "contractUsd": 38000
+    },
+    {
+      "vendorId": "bluebonnet-engineering",
+      "stages": ["pre-construction", "permitting", "foundation"],
+      "scope": "Civil plans, drainage and foundation design",
+      "contractUsd": 24500
+    },
+    {
+      "vendorId": "permitpro-expediting",
+      "stages": ["permitting"],
+      "scope": "Tracking the City's review cycles",
+      "contractUsd": 6500
+    },
+    {
+      "vendorId": "hill-country-earthworks",
+      "stages": ["site-prep"],
+      "scope": "Clearing and grading the lot",
+      "contractUsd": 31000
+    },
+    {
+      "vendorId": "bright-spark-electric",
+      "stages": ["site-prep", "rough-ins", "final-installs"],
+      "scope": "Temporary power, wiring and fixtures for three homes",
+      "contractUsd": 58000
+    },
+    {
+      "vendorId": "capitol-concrete",
+      "stages": ["foundation"],
+      "scope": "Slabs for the three homes",
+      "contractUsd": 96000
+    },
+    {
+      "vendorId": "lone-star-framing",
+      "stages": ["framing", "dry-in"],
+      "scope": "Framing and sheathing",
+      "contractUsd": 118000
+    }
+  ],
   "issues": [
     {
       "id": "BA-01",
