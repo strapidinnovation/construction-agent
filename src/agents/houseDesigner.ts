@@ -3,7 +3,9 @@ import { DESIGN_MODEL, chatText, type Progress } from "../llm.ts";
 import { PROJECT_ROOT } from "../paths.ts";
 import { callout, card, esc, list, page, section } from "../report.ts";
 import type { Listing } from "./landSearch.ts";
+import { siteRulesHtml } from "./siteRules.ts";
 import {
+  HOUSING_TYPE_LABEL,
   STRATEGY_LABEL,
   homes,
   houseTypeLine,
@@ -47,12 +49,16 @@ Use exactly these three panels, each inside a <g> with a light border and a titl
    overlap. Show doors as gaps with a swing arc, windows on exterior walls, stairs if
    multi-story, overall dimension lines on two sides, and the total sq ft per floor.
 3. NOTES panel: x 1200..1580, y 20..1080, font-size 14, each line its own <text> with
-   ~22 px line spacing. List the strategy and number of homes, zoning district, every rule and
-   how the design complies (setbacks, total building coverage %, impervious cover %, height),
-   lot size, sq ft per house type, and the approvals needed.
+   ~22 px line spacing. List the strategy, the legal housing type and number of homes, zoning
+   district, every rule and how the design complies (setbacks, total building coverage %,
+   impervious cover %, height and stories, floor area ratio and parking when given), lot size,
+   sq ft per house type, and the approvals needed.
 
 Rules:
 - Respect every setback, the maximum building coverage, and the height limit you are given.
+- When parking, floor area ratio, stories, overlays or design standards are given, the design
+  must meet them too: e.g. draw each home's parking (garage spaces plus a driveway pad) on the
+  site plan, and follow garage-placement or facade standards.
 - Use the footprint size and program given for each house type.
 - Room sizes must be realistic: bedrooms at least 10'x11', primary bedroom ~13'x15',
   living room ~16'x18', 2-car garage ~20'x22'. Room areas must add up to the footprint.
@@ -65,6 +71,17 @@ export function estimateLot(lotSqft: number): Lot {
   const widthFt = Math.max(25, Math.round(Math.sqrt(lotSqft / 2.5) / 5) * 5);
   const depthFt = Math.round(lotSqft / widthFt);
   return { widthFt, depthFt };
+}
+
+/** Overlays and design standards from the site rules research, for the drawing prompt. */
+function designRulesText(rules: ZoningRules): string {
+  const r = rules.research;
+  if (!r) return "";
+  const lines = [
+    ...r.overlays.map((o) => `- Overlay ${o.name}: ${o.effect}`),
+    ...r.designStandards.map((s) => `- Design standard: ${s}`),
+  ];
+  return lines.length ? `\n${lines.join("\n")}` : "";
 }
 
 function buildPrompt(
@@ -92,10 +109,10 @@ ZONING: ${rules.district} (${rules.districtName}), ${rules.jurisdiction}
 - Rear setback: ${rules.rearFt} ft
 - Max building coverage: ${pct(rules.maxBuildingCoverage)} of lot area (garage counts)
 - Max impervious cover: ${pct(rules.maxImperviousCover)} of lot area (house + driveway + patios)
-- Max height: ${rules.maxHeightFt} ft
-${rules.notes.map((n) => `- Note: ${n}`).join("\n")}
+- Max height: ${rules.maxHeightFt} ft${rules.maxStories ? `, ${rules.maxStories} stories` : ""}${rules.maxFar ? `\n- Floor area ratio: ${rules.maxFar} (max ${Math.floor(lotSqft * rules.maxFar).toLocaleString("en-US")} sq ft of floor area)` : ""}${rules.parkingPerUnit ? `\n- Parking: ${rules.parkingPerUnit} spaces per home` : ""}
+${rules.notes.map((n) => `- Note: ${n}`).join("\n")}${designRulesText(rules)}
 
-SITE STRATEGY: ${STRATEGY_LABEL[strategy.strategy]} (${strategy.homes} ${strategy.homes === 1 ? "home" : "homes"})
+SITE STRATEGY: ${STRATEGY_LABEL[strategy.strategy]} (${strategy.homes} ${strategy.homes === 1 ? "home" : "homes"})${strategy.housingType ? `\n- Legal housing type: ${HOUSING_TYPE_LABEL[strategy.housingType]}` : ""}
 - Homes: ${homeList}
 - Layout: ${strategy.layout}
 - Approvals: ${strategy.approvals.join("; ") || "standard residential building permit"}
@@ -154,9 +171,14 @@ function viewerHtml(
   svg: string,
 ): string {
   const n = (v: number) => v.toLocaleString("en-US");
-  const zoning = rules.verified
-    ? callout(`Zoning rules from ${rules.source}.`)
-    : callout("Zoning rules were entered by hand and are NOT verified against local code.", "warn");
+  const zoning = rules.research
+    ? ""
+    : rules.verified
+      ? callout(`Zoning rules from ${rules.source}.`)
+      : callout(
+          "Zoning rules were entered by hand and are NOT verified against local code.",
+          "warn",
+        );
   const heated = strategy.houseTypes.reduce((s, t) => s + t.heatedSqft * t.count, 0);
 
   const types = strategy.houseTypes
@@ -174,7 +196,9 @@ function viewerHtml(
     card(
       "Strategy",
       `${strategy.homes} ${strategy.homes === 1 ? "home" : "homes"}`,
-      STRATEGY_LABEL[strategy.strategy],
+      strategy.housingType
+        ? `${HOUSING_TYPE_LABEL[strategy.housingType]}; ${STRATEGY_LABEL[strategy.strategy].toLowerCase()}`
+        : STRATEGY_LABEL[strategy.strategy],
     ) +
     card("Heated area", `${n(heated)} sq ft`, "all homes") +
     card("Lot", `${n(lot.widthFt * lot.depthFt)} sq ft`, `${lot.widthFt}' x ${lot.depthFt}'`) +
@@ -192,13 +216,18 @@ function viewerHtml(
       `<div class="table-scroll"><table><tr><th>Type</th><th class="num">Homes</th><th class="num">Stories</th>` +
         `<th class="num">Bed / bath</th><th class="num">Heated sq ft</th><th>Garage</th>` +
         `<th class="num">Footprint</th></tr>${types}</table></div>`,
-    );
+    ) +
+    section("Site rules", siteRulesHtml(rules));
 
   return page({
     dir,
     file: "plan.html",
+    kind: "Concept site plan",
     title: listing.address,
-    subtitle: `Concept plan drawn by ${esc(DESIGN_MODEL)}. Not a construction or permit drawing.`,
+    meta: [
+      ["Status", "Concept only, not for construction or permit"],
+      ["Drawn by", DESIGN_MODEL],
+    ],
     body,
   });
 }

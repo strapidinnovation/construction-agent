@@ -12,26 +12,14 @@
  *   and screen readers when it cannot show the blocks.
  */
 import type { KnownBlock } from "@slack/types";
-import { existsSync } from "node:fs";
-import { basename } from "node:path";
 import type { Listing } from "../agents/landSearch.ts";
 import { houseTypeLine, STRATEGY_LABEL } from "../agents/sitePlanner.ts";
 import { listingDetails, noListingsText, usd } from "../listingFormat.ts";
 import type { CancelResult, JobInfo, JobKind } from "./queue.ts";
-import type { ReplyMode, Session } from "./sessions.ts";
+import type { ReplyMode } from "./sessions.ts";
 import type { DesignResult } from "./skills/design.ts";
 import type { EstimateResult } from "./skills/estimate.ts";
-import {
-  AT_RISK_MAX_DAYS,
-  niceDate,
-  ON_TRACK_MAX_DAYS,
-  stageLabel,
-  statusText,
-  type Issue,
-  type Project,
-  type ProjectFilter,
-  type ProjectStatus,
-} from "./skills/projects.ts";
+import type { InteriorResult } from "./skills/interior.ts";
 import type { TimelineResult } from "./skills/timeline.ts";
 import type { Verdict } from "../agents/feasibility.ts";
 import type { Flag } from "../agents/siteChecks.ts";
@@ -50,19 +38,15 @@ const safe = (s: string) => s.replace(/[<>|]/g, "");
 
 const EXAMPLES = [
   "land around 300k in Austin, TX",
-  "same but under 200k",
-  "design a house on Corral Lane",
-  "design on Geronimo Trail with a 60x150 lot",
-  "how much will it cost to build?",
-  "timeline starting Jan 4",
+  "find land under 300k in Austin with no flood or soil problems",
+  "design a house on 8446 Corral Ln",
   "feasibility report for 3218 Brass Buttons Trl",
-  "status",
-  "cancel",
-  "list ongoing projects",
-  "which projects are delayed?",
-  "why is River Bend late?",
-  "find the best lot under 300k in Austin to build and sell",
+  "find the most profitable lot under 300k in Austin to build and sell",
   "compare the plans for Brass Buttons and Corral Lane",
+  "which projects need attention, and why?",
+  "why is River Bend late?",
+  "what have we done so far?",
+  "cancel",
 ];
 
 /** The last line of the help message, describing what the bot remembers in the current reply mode. */
@@ -97,7 +81,7 @@ export function helpReply(mode: ReplyMode = "thread"): Reply {
   };
 }
 
-/** Reply when the router understood a search but a detail is missing or unreadable. */
+/** Why a search couldn't run: a detail is missing or unreadable. */
 export function missingSearchInfo(
   reason: "missing-city" | "missing-budget" | "bad-budget",
   budget?: string,
@@ -226,6 +210,10 @@ export function feasibilityTitle(subject?: string): string {
   return `:clipboard: *Preparing the feasibility report${subject ? ` for ${subject}` : ""}*`;
 }
 
+export function interiorTitle(subject?: string): string {
+  return `:couch_and_lamp: *Designing the 3D interior${subject ? ` for ${subject}` : ""}*`;
+}
+
 export function timelineTitle(subject?: string): string {
   return `:calendar: *Planning the construction timeline${subject ? ` for ${subject}` : ""}*`;
 }
@@ -282,6 +270,7 @@ const JOB_NAME: Record<JobKind, string> = {
   estimate: "cost estimate",
   timeline: "timeline",
   feasibility: "feasibility report",
+  interior: "3D interior",
 };
 
 /** "the cost estimate for 3218 Brass Buttons Trl" */
@@ -327,11 +316,12 @@ export function duplicateReply(job: JobInfo): Reply {
   };
 }
 
-export function noPlanReply(what: "estimate" | "timeline" | "feasibility"): Reply {
+export function noPlanReply(what: "estimate" | "timeline" | "feasibility" | "interior"): Reply {
   const thing = {
     estimate: "a cost estimate",
     timeline: "a timeline",
     feasibility: "a feasibility report",
+    interior: "the 3D interior",
   }[what];
   return {
     text: `There's no house plan here yet, so I can't make ${thing}. Search for land, pick a lot and design it first (e.g. \`design a house on Corral Lane\`).`,
@@ -370,12 +360,14 @@ export function jobFailedReply(what: JobKind, err: unknown): Reply {
 export const ESTIMATE_BUTTON = "estimate_plan";
 export const TIMELINE_BUTTON = "timeline_plan";
 export const FEASIBILITY_BUTTON = "feasibility_plan";
+export const INTERIOR_BUTTON = "interior_plan";
 
-type NextStep = "estimate" | "timeline" | "feasibility";
+type NextStep = "estimate" | "timeline" | "feasibility" | "interior";
 const NEXT_STEP: Record<NextStep, { action: string; label: string }> = {
   estimate: { action: ESTIMATE_BUTTON, label: "Estimate cost" },
   timeline: { action: TIMELINE_BUTTON, label: "Plan the timeline" },
   feasibility: { action: FEASIBILITY_BUTTON, label: "Feasibility report" },
+  interior: { action: INTERIOR_BUTTON, label: "3D interior" },
 };
 
 function nextSteps(steps: NextStep[], planDir: string): KnownBlock {
@@ -404,7 +396,7 @@ const money = (n: number) => usd(Math.round(n));
 export function designDoneReply(l: Listing, r: DesignResult): Reply {
   const s = r.strategy;
   const zoning = r.zoningFound
-    ? `${r.rules.district} (${r.rules.districtName}), ${r.rules.jurisdiction}`
+    ? `${r.rules.district} (${r.rules.districtName}), ${r.rules.jurisdiction}${r.rules.research ? `; researched, ${r.rules.research.confidence} confidence` : ""}`
     : `typical residential defaults, because ${r.zoningNote}`;
   const types = s.houseTypes.map((t) => `• ${houseTypeLine(t)}`).join("\n");
 
@@ -443,7 +435,7 @@ export function designDoneReply(l: Listing, r: DesignResult): Reply {
     type: "context",
     elements: notes.map((t) => ({ type: "mrkdwn" as const, text: t })),
   });
-  blocks.push(nextSteps(["estimate", "timeline", "feasibility"], r.dir));
+  blocks.push(nextSteps(["estimate", "timeline", "feasibility", "interior"], r.dir));
   return { text: `Plan ready for ${l.address}`, blocks };
 }
 
@@ -514,6 +506,32 @@ export function estimateDoneReply(r: EstimateResult): Reply {
   });
   blocks.push(nextSteps(["timeline", "feasibility"], e.planDir));
   return { text: `Estimated cost: ${money(e.totalUsd)}`, blocks };
+}
+
+/** The summary posted when the 3D interior is finished; the PDF is uploaded right after it. */
+export function interiorDoneReply(r: InteriorResult): Reply {
+  const floors = `${r.floors} ${r.floors === 1 ? "floor" : "floors"}`;
+  return {
+    text: `3D interior ready: ${floors}, ${r.style.name}`,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `:couch_and_lamp: *3D interior ready: ${floors}*\n*Style:* ${r.style.name}. ${r.style.reasoning}`,
+        },
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `Furnished in ${took(r.seconds)}. Concept visual of the plan's rooms, not a construction drawing.`,
+          },
+        ],
+      },
+    ],
+  };
 }
 
 /**
@@ -681,271 +699,6 @@ export function feasibilityDoneReply(r: FeasibilityResult): Reply {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Construction projects (skills/projects.ts): the list, one project's
-// overview, and the "why is it late" breakdown.
-// ---------------------------------------------------------------------------
-
-/** action_ids of the project buttons; their value is the project id. */
-export const PROJECT_BUTTON = "project_details";
-export const PROJECT_DELAY_BUTTON = "project_delay";
-
-const STATUS_ICON: Record<ProjectStatus, string> = {
-  delayed: ":red_circle:",
-  "at-risk": ":large_orange_circle:",
-  "on-track": ":large_green_circle:",
-  "on-hold": ":double_vertical_bar:",
-  completed: ":white_check_mark:",
-};
-
-/** "42 days late" / "on schedule" / "3 days early". */
-function lateText(days: number): string {
-  if (days > 0) return `${days} ${days === 1 ? "day" : "days"} late`;
-  if (days < 0) return `${-days} days early`;
-  return "on schedule";
-}
-
-/** "Framing (55%)", or "Rough-ins (70%) + Exterior (10%)" when stages overlap. */
-function currentStageText(p: Project): string {
-  if (p.status === "completed") return "Completed";
-  return (
-    p.current.map((s) => `${stageLabel(s.stage)} (${s.percent}%)`).join(" + ") || "Not started"
-  );
-}
-
-export function projectsListReply(projects: Project[], filter: ProjectFilter): Reply {
-  const what = {
-    all: "Ongoing projects",
-    delayed: "Delayed projects",
-    behind: "Projects behind schedule",
-    attention: "Projects that need attention",
-    "on-hold": "Projects on hold",
-  }[filter];
-  const none = {
-    all: "There are no ongoing projects in data/projects/.",
-    delayed: "No projects are delayed right now.",
-    behind: "No projects are behind schedule right now.",
-    attention: "No projects need attention right now: everything is on track.",
-    "on-hold": "No projects are on hold right now.",
-  }[filter];
-  if (!projects.length) return { text: none };
-
-  const blocks: KnownBlock[] = [
-    { type: "section", text: { type: "mrkdwn", text: `*${what} (${projects.length})*` } },
-    ...projects.map((p): KnownBlock => ({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text:
-          `${STATUS_ICON[p.status]} *${p.data.name}* — ${statusText(p.status)}${p.status === "on-hold" ? "" : `, ${lateText(p.daysLate)}`}\n` +
-          `${currentStageText(p)} · ${p.percentComplete}% overall · finish ${niceDate(p.data.dates.forecastFinish)}`,
-      },
-      accessory: {
-        type: "button",
-        action_id: PROJECT_BUTTON,
-        text: { type: "plain_text", text: "Details" },
-        value: p.data.id,
-      },
-    })),
-    {
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `:large_green_circle: up to ${ON_TRACK_MAX_DAYS} days late · :large_orange_circle: ${ON_TRACK_MAX_DAYS + 1}–${AT_RISK_MAX_DAYS} days · :red_circle: more than ${AT_RISK_MAX_DAYS} days · :double_vertical_bar: on hold. Late = forecast finish vs planned finish.`,
-        },
-      ],
-    },
-  ];
-  return { text: `${what}: ${projects.length}`, blocks };
-}
-
-/** One project: status line, the model's summary, key facts, open issues and what's next. */
-export function projectOverviewReply(p: Project, summary: string): Reply {
-  const d = p.data;
-  const finish = d.dates.actualFinish
-    ? `Finished ${niceDate(d.dates.actualFinish)} (planned ${niceDate(d.dates.plannedFinish)})`
-    : `${niceDate(d.dates.forecastFinish)} (planned ${niceDate(d.dates.plannedFinish)})`;
-
-  const blocks: KnownBlock[] = [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text:
-          `${STATUS_ICON[p.status]} *${d.name}* — ${statusText(p.status)}${p.status === "on-hold" ? "" : `, ${lateText(p.daysLate)}`}\n` +
-          `${d.site.address} · ${d.scope.homes} ${d.scope.homes === 1 ? "home" : "homes"} · PM ${d.team.projectManager}`,
-      },
-    },
-    { type: "section", text: { type: "mrkdwn", text: summary } },
-    {
-      type: "section",
-      fields: [
-        { type: "mrkdwn", text: `*Stage now*\n${currentStageText(p)}` },
-        {
-          type: "mrkdwn",
-          text: `*Overall*\n${p.percentComplete}% · ${p.doneStages} of ${d.stages.length} stages done`,
-        },
-        { type: "mrkdwn", text: `*Finish*\n${finish}` },
-        {
-          type: "mrkdwn",
-          // Approved change orders raise what the client has agreed to pay, so
-          // they count toward the budget the spending is compared with.
-          text: `*Budget*\n${usd(d.budget.spentUsd)} spent of ${usd(d.budget.contractUsd + d.budget.approvedChangeOrdersUsd)}${
-            d.budget.approvedChangeOrdersUsd
-              ? ` (incl. ${usd(d.budget.approvedChangeOrdersUsd)} change orders)`
-              : ""
-          }`,
-        },
-      ],
-    },
-  ];
-  if (d.onHold)
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `:double_vertical_bar: *On hold since ${niceDate(d.onHold.since)}*\n${d.onHold.reason}`,
-      },
-    });
-  if (p.openIssues.length)
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*Open issues*\n${p.openIssues
-          .map((i) => `• ${i.title} — ${i.owner}${i.nextStep ? `. Next: ${i.nextStep}` : ""}`)
-          .join("\n")}`,
-      },
-    });
-  if (p.nextInspection)
-    blocks.push({
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `Next inspection: ${p.nextInspection.name}, ${niceDate(p.nextInspection.date)}`,
-        },
-      ],
-    });
-  if (p.delayCauses.length && p.daysLate > 0)
-    blocks.push({
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          action_id: PROJECT_DELAY_BUTTON,
-          text: { type: "plain_text", text: "Why is it late?" },
-          value: d.id,
-        },
-      ],
-    });
-  return { text: `${d.name}: ${statusText(p.status)}`, blocks };
-}
-
-/**
- * Why a project is late: the model's explanation, then every cause with its
- * days, status and next step, biggest first. `explanation` is null when the
- * project isn't late (then there's nothing to explain).
- */
-export function projectDelayReply(p: Project, explanation: string | null): Reply {
-  const d = p.data;
-  if (p.daysLate <= 0 || !explanation)
-    return {
-      text: `${d.name} is ${lateText(p.daysLate)}: forecast finish ${niceDate(d.dates.forecastFinish)}, planned ${niceDate(d.dates.plannedFinish)}. Nothing is delaying it.`,
-    };
-
-  const verb = d.dates.actualFinish ? "finished" : "is";
-  const cause = (i: Issue) =>
-    `• *${i.impactDays} days* · ${i.title} — ${i.category}, ${
-      i.status === "open"
-        ? `:red_circle: open${i.expectedResolution ? ` (expected ${niceDate(i.expectedResolution)})` : ""}`
-        : `:white_check_mark: resolved${i.resolvedOn ? ` ${niceDate(i.resolvedOn)}` : ""}`
-    }, during ${stageLabel(i.stage)}` +
-    (i.status === "open" && i.nextStep ? `\n   Next: ${i.nextStep}` : "");
-
-  const blocks: KnownBlock[] = [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `:hourglass_flowing_sand: *Why ${d.name} ${verb} ${lateText(p.daysLate)}*\nPlanned finish ${niceDate(d.dates.plannedFinish)} → ${d.dates.actualFinish ? "finished" : "now"} ${niceDate(d.dates.actualFinish ?? d.dates.forecastFinish)}`,
-      },
-    },
-    { type: "section", text: { type: "mrkdwn", text: explanation } },
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*Causes, biggest first*\n${p.delayCauses.map(cause).join("\n")}`,
-      },
-    },
-  ];
-  if (d.onHold)
-    blocks.push({
-      type: "section",
-      text: { type: "mrkdwn", text: `:double_vertical_bar: *On hold:* ${d.onHold.reason}` },
-    });
-  blocks.push({
-    type: "context",
-    elements: [
-      {
-        type: "mrkdwn",
-        text: "Delays can overlap, so the days per cause don't always add up to the total.",
-      },
-    ],
-  });
-  return { text: `Why ${d.name} ${verb} ${lateText(p.daysLate)}`, blocks };
-}
-
-export function projectNotFoundReply(query: string, names: string[]): Reply {
-  return {
-    text: `I couldn't find a project called "${query}". The projects I know are: ${names.join(", ")}.`,
-  };
-}
-
-export function projectAmbiguousReply(query: string, options: Project[]): Reply {
-  return {
-    text: `"${query}" matches more than one project: ${options.map((p) => p.data.name).join(" or ")}. Which one?`,
-  };
-}
-
-/** A plain summary of the thread memory, for "status". `goal` is the agent's current mission here, if any. */
-export function statusReply(s: Session, goal?: string): Reply {
-  const lines: string[] = [];
-  if (goal) lines.push(`• Working on: _${goal}_`);
-  if (s.search)
-    lines.push(`• Last search: *${s.search.city}*, ${usd(s.search.lo)} to ${usd(s.search.hi)}`);
-  if (s.listings.length) lines.push(`• Listings shown: ${s.listings.map(street).join(", ")}`);
-  if (s.selected) lines.push(`• Selected lot: <${s.selected.url}|${safe(s.selected.address)}>`);
-  for (const j of s.jobs ?? [])
-    lines.push(
-      `• Queued or running: ${jobName({ kind: j.kind, subject: j.listing ? street(j.listing) : "" })}`,
-    );
-  if (s.planDir) {
-    const extras = [
-      existsSync(`${s.planDir}/estimate.json`) ? "cost estimate" : "",
-      existsSync(`${s.planDir}/timeline.json`) ? "timeline" : "",
-    ].filter(Boolean);
-    lines.push(
-      `• Latest plan: \`output/${basename(s.planDir)}\`${extras.length ? ` (with ${extras.join(" and ")})` : ""}`,
-    );
-  }
-  if (!lines.length)
-    return {
-      text: "Nothing here yet. Start with a search, e.g. `land around 300k in Austin, TX`.",
-    };
-  return {
-    text: "Here's where things stand.",
-    blocks: [
-      {
-        type: "section",
-        text: { type: "mrkdwn", text: `*So far*\n${lines.join("\n")}` },
-      },
-    ],
-  };
-}
-
 export function errorReply(err: unknown): Reply {
   const message = err instanceof Error ? err.message : String(err);
   const cause = err instanceof Error ? (err.cause as { code?: string } | undefined) : undefined;
@@ -966,6 +719,10 @@ export function errorReply(err: unknown): Reply {
   if (/usage limit|rate limit|hit your limit|limit reached/i.test(message))
     return {
       text: "I've reached my Claude usage limit for now. Please try again later; the limit resets every few hours.",
+    };
+  if (/not logged in|\/login/i.test(message))
+    return {
+      text: "Claude isn't signed in on the computer I run on. Whoever runs me needs to run `claude` there and log in.",
     };
   return { text: `Something went wrong: ${message}` };
 }

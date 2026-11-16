@@ -35,7 +35,7 @@ export type TimelineResult = {
 };
 
 /**
- * Choose the start date. `startText` comes from the router (ideally already
+ * Choose the start date. `startText` comes from the agent (ideally already
  * "2027-01-04"); if it is empty or unreadable we use next Monday.
  */
 export function resolveStart(startText: string): { date: string; note: string } {

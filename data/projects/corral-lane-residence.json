@@ -123,6 +123,74 @@
       "percent": 0
     }
   ],
+  "vendors": [
+    {
+      "vendorId": "bluebonnet-engineering",
+      "stages": ["pre-construction", "foundation"],
+      "scope": "Foundation design",
+      "contractUsd": 9800
+    },
+    {
+      "vendorId": "hill-country-earthworks",
+      "stages": ["site-prep"],
+      "scope": "Clearing and grading",
+      "contractUsd": 14500
+    },
+    {
+      "vendorId": "capitol-concrete",
+      "stages": ["foundation"],
+      "scope": "Slab and driveway",
+      "contractUsd": 41000
+    },
+    {
+      "vendorId": "lone-star-framing",
+      "stages": ["framing", "dry-in"],
+      "scope": "Framing and sheathing",
+      "contractUsd": 52000
+    },
+    {
+      "vendorId": "summit-roofing",
+      "stages": ["dry-in"],
+      "scope": "Shingle roof",
+      "contractUsd": 18500
+    },
+    {
+      "vendorId": "austin-pro-plumbing",
+      "stages": ["foundation", "rough-ins", "final-installs"],
+      "scope": "Underslab, top-out and fixtures",
+      "contractUsd": 24000
+    },
+    {
+      "vendorId": "coolbreeze-mechanical",
+      "stages": ["rough-ins", "final-installs"],
+      "scope": "Ductwork and heat pump",
+      "contractUsd": 21000
+    },
+    {
+      "vendorId": "bright-spark-electric",
+      "stages": ["rough-ins", "final-installs"],
+      "scope": "Wiring and fixtures",
+      "contractUsd": 22500
+    },
+    {
+      "vendorId": "texas-insulation-drywall",
+      "stages": ["insulation-drywall"],
+      "scope": "Spray foam, drywall and texture",
+      "contractUsd": 26000
+    },
+    {
+      "vendorId": "artisan-interiors",
+      "stages": ["interior-finishes"],
+      "scope": "Cabinets, trim, flooring and paint",
+      "contractUsd": 48000
+    },
+    {
+      "vendorId": "granite-city-countertops",
+      "stages": ["interior-finishes", "final-installs"],
+      "scope": "Kitchen and bath countertops",
+      "contractUsd": 12500
+    }
+  ],
   "issues": [
     {
       "id": "CL-01",

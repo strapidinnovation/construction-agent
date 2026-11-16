@@ -1,23 +1,18 @@
 /**
  * SuperAgent's brain: decides what to do with each message and does it.
  *
- * The flow for every message is:
- *   1. Load this conversation's memory (sessions.ts).
- *   2. Ask the router (router.ts) what the user wants.
- *   3. Run the matching skill (skills/), updating the conversation memory.
- *   4. Send the result through the conversation's `Output`.
+ * Every message goes to the agent (agent/agent.ts), which works out what is
+ * meant and which skills to use. Only a few things are handled in code,
+ * because they must work instantly and the same way every time: answers to a
+ * plan or question the agent is waiting on, "cancel", "help", and the buttons.
  *
  * Nothing in this file talks to Slack directly. src/slack.ts creates an
  * Output that posts to Slack and passes it in. That separation means
  * the same logic can be driven by a test script that prints to the console.
  *
- * Quick jobs (search, projects, status, help, cancel) answer immediately. Slow jobs
- * (house design, cost estimate, timeline) go into the job queue (queue.ts)
- * and report progress while they run.
- *
- * Goals that need several steps ("find the best lot under 300k and tell me if
- * it's worth building") go to the agent (agent/agent.ts), which decides on its
- * own which of these skills to use, in what order.
+ * Slow jobs (house design, cost estimate, timeline, feasibility, 3D interior) go into the
+ * job queue (queue.ts) and report progress while they run, whether the agent
+ * or a button started them.
  */
 import { existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -39,34 +34,22 @@ import {
 import { findPlanByName, listingOfPlan, planForListing, savedPlans, streetOf } from "./plans.ts";
 import type { Listing } from "../agents/landSearch.ts";
 import { bestMatch } from "./match.ts";
-import { route, type Request } from "./router.ts";
 import {
   allSessions,
   findListingByUrl,
   forgetJob,
   getSession,
-  recentAnswer,
   saveJob,
   updateSession,
-  type LastAnswer,
   type ReplyMode,
   type SavedJob,
   type Session,
 } from "./sessions.ts";
 import { designHouse } from "./skills/design.ts";
 import { estimateCost } from "./skills/estimate.ts";
-import { searchLand } from "./skills/search.ts";
-import {
-  explainDelay,
-  findProject,
-  listProjects,
-  loadProjects,
-  statusText,
-  summarizeProject,
-  type Project,
-} from "./skills/projects.ts";
 import { planTimeline } from "./skills/timeline.ts";
 import { feasibilityReport, type FeasibilityResult } from "./skills/feasibility.ts";
+import { designInterior, type InteriorResult } from "./skills/interior.ts";
 import type { DesignResult } from "./skills/design.ts";
 import type { EstimateResult } from "./skills/estimate.ts";
 import type { TimelineResult } from "./skills/timeline.ts";
@@ -81,27 +64,20 @@ import {
   feasibilityDoneReply,
   feasibilityTitle,
   helpReply,
+  interiorDoneReply,
+  interiorTitle,
   jobFailedReply,
   limitReply,
   listingAmbiguousReply,
   listingNotFoundReply,
-  listingsReply,
-  MAX_LISTINGS,
-  missingSearchInfo,
   noListingsYetReply,
   noPlanForReply,
   noPlanReply,
   noSuchListingNumberReply,
   modelDownReply,
   planAmbiguousReply,
-  projectAmbiguousReply,
-  projectDelayReply,
-  projectNotFoundReply,
-  projectOverviewReply,
-  projectsListReply,
   queuedText,
   resumeReply,
-  statusReply,
   stepText,
   street,
   timelineDoneReply,
@@ -112,13 +88,6 @@ import {
 
 /** How many slow jobs one person may have waiting or running at the same time. */
 const MAX_JOBS_PER_USER = 2;
-
-/** A quick answer to remember as the conversation's last answer, for follow-ups. */
-const answered = (request: string, summary: string): LastAnswer => ({
-  request,
-  summary,
-  at: new Date().toISOString(),
-});
 
 /**
  * Where SuperAgent sends its answers for one conversation. src/slack.ts implements
@@ -157,179 +126,26 @@ export type Ctx = {
   makeOutput?: () => Output;
 };
 
+const STOP = /^\s*(cancel|stop|never ?mind|abort)\b/i;
+const HELP = /^\s*(help|hi|hello|hey|what can you do)\s*[.!?]*\s*$/i;
+
 /** Handle one message sent to the bot. */
 export async function handleMessage(ctx: Ctx, text: string): Promise<void> {
   // The agent asked this person something (approve a plan, pick an option):
   // their next message is the answer, unless they want to stop.
   const waiting = waitingMission(ctx.key, ctx.user);
   if (waiting) {
-    if (/^\s*(cancel|stop|never ?mind|abort)\b/i.test(text)) return cancelMission(ctx, waiting.id);
+    if (STOP.test(text)) return cancelMission(ctx, waiting.id);
     return answerMission(ctx, waiting.id, text);
   }
 
-  const session = getSession(ctx.key);
-  const projectNames = loadProjects().map((p) => p.data.name);
-  const recent = recentAnswer(session);
-  const agentNote = recent
-    ? `SuperAgent's last answer here was to "${recent.request}": "${recent.summary.slice(-300)}". A reply that continues it with several steps or several things ("yes, do that", "why for each of them", "now the same for X") is a "goal".`
-    : undefined;
-  const request = await route(text, session, projectNames, agentNote);
-  console.log(`  intent: ${JSON.stringify(request)}`);
-
-  // Safety net: "status of the X project" sometimes comes back as the
-  // conversation "status" intent, but with a project name filled in. A project name means
-  // the question is about that project.
-  if (request.intent === "status" && request.projectName) request.intent = "projects";
-  // "Which projects need attention, and why?" asks for the reasons behind a
-  // whole list, which means reading each project: a job for the agent.
-  if (
-    request.intent === "projects" &&
-    !request.projectName &&
-    request.projectFilter !== "all" &&
-    request.projectTopic === "delay"
-  )
-    request.intent = "goal";
-  // The single-property skills work on one property; several named ("Brass
-  // Buttons and Corral Lane", "A, B") is a job for the agent.
-  // The same goes for follow-ups to the last answer that point back at
-  // several things ("how long would each take?", "estimate both of them").
-  const singleProperty = ["design", "estimate", "timeline", "feasibility"];
-  const several = /,|;|\band\b|&/i.test(request.listing);
-  const backReference = /\b(each|both|them|those|these|all)\b/i.test(text);
-  if (singleProperty.includes(request.intent) && (several || (recent && backReference)))
-    request.intent = "goal";
-
-  switch (request.intent) {
-    case "search":
-      return ctx.out.reply(await search(ctx.key, session, request, text));
-    case "design":
-      return startDesign(
-        ctx,
-        { name: request.listing, number: request.listingNumber },
-        request.lot,
-      );
-    // The router sometimes files a named property under projectName ("the
-    // timeline for River Bend"), so either field can name the plan.
-    case "estimate":
-      return startEstimate(ctx, { name: request.listing || request.projectName });
-    case "timeline":
-      return startTimeline(ctx, request.startDate, {
-        name: request.listing || request.projectName,
-      });
-    case "feasibility":
-      return startFeasibility(ctx, { name: request.listing || request.projectName });
-    case "status":
-      return ctx.out.reply(statusReply(session, activeMission(ctx.key)?.goal));
-    case "projects":
-      return projects(ctx, session, request, text);
-    case "goal":
-      await startMission(ctx, text);
-      return;
-    case "cancel": {
-      // A typed "cancel" stops the agent's mission here first (which also stops its job).
-      const mission = activeMission(ctx.key);
-      return mission ? cancelMission(ctx, mission.id) : cancelJob(ctx);
-    }
-    case "help":
-      return ctx.out.reply(helpReply(ctx.mode));
+  // Stopping must work instantly and without the model.
+  if (STOP.test(text)) {
+    const mission = activeMission(ctx.key);
+    return mission ? cancelMission(ctx, mission.id) : cancelJob(ctx);
   }
-}
-
-/**
- * Run a land search. If the message left out the city or budget but this
- * conversation already searched before, reuse the earlier value ("same but under
- * 200k"). The router is asked to do this too; doing it here as well makes it
- * reliable even when the model forgets.
- */
-async function search(
-  key: string,
-  session: Session,
-  request: Request,
-  text: string,
-): Promise<Reply> {
-  const city = request.city || session.search?.city || "";
-  const budget = request.budget || session.search?.budget || "";
-  const result = await searchLand(city, budget);
-  if (!result.ok) return missingSearchInfo(result.reason, result.budget);
-
-  // Only the listings we actually show are remembered, so "#3"
-  // always means the third line of the message the user is looking at.
-  const shown = result.listings.slice(0, MAX_LISTINGS);
-  const streets = shown.map((l) => l.address.split(",")[0]).join("; ");
-  await updateSession(key, {
-    search: { city: result.city, budget, lo: result.lo, hi: result.hi },
-    listings: shown,
-    selected: undefined,
-    lastAnswer: answered(text, `Showed ${shown.length} listings in ${result.city}: ${streets}.`),
-  });
-  return listingsReply(shown, result.listings.length, result.city, result.lo, result.hi);
-}
-
-// ---------------------------------------------------------------------------
-// Construction projects. These are quick answers (reading JSON files plus at
-// most one short model call), so they don't go through the job queue.
-// ---------------------------------------------------------------------------
-
-/**
- * Answer a question about ongoing projects:
- * - no project name           -> the list (optionally filtered, e.g. only delayed),
- * - a name                    -> that project's overview,
- * - a name + "why is it late" -> the delay breakdown.
- * "Why is it late?" without a name uses the project last discussed in this conversation.
- */
-async function projects(ctx: Ctx, session: Session, request: Request, text: string): Promise<void> {
-  // Only a question about one project ("why is it late?") falls back to the
-  // last project discussed; a filtered list ("which are delayed?") never does.
-  const followUp = request.projectTopic === "delay" && request.projectFilter === "all";
-  const name = request.projectName || (followUp ? (session.projectName ?? "") : "");
-  if (!name) {
-    const list = listProjects(request.projectFilter);
-    const names = list
-      .map((p) => `${p.data.name} (${statusText(p.status)}, ${p.daysLate} days late)`)
-      .join("; ");
-    await updateSession(ctx.key, {
-      lastAnswer: answered(text, `Listed ${list.length} projects: ${names || "none"}.`),
-    });
-    return ctx.out.reply(projectsListReply(list, request.projectFilter));
-  }
-
-  const found = findProject(name);
-  if (found.kind === "not-found") return ctx.out.reply(projectNotFoundReply(name, found.names));
-  if (found.kind === "ambiguous") return ctx.out.reply(projectAmbiguousReply(name, found.options));
-  await showProject(ctx, found.project, request.projectTopic, text);
-}
-
-/** Post one project's overview or delay breakdown, and remember it as the conversation's current project. */
-async function showProject(
-  ctx: Ctx,
-  p: Project,
-  topic: "overview" | "delay",
-  text = topic === "delay" ? `Why is ${p.data.name} late?` : `Tell me about ${p.data.name}`,
-): Promise<void> {
-  const what = topic === "delay" ? "why it is late" : "an overview";
-  await updateSession(ctx.key, {
-    projectName: p.data.name,
-    lastAnswer: answered(
-      text,
-      `Showed ${what} of ${p.data.name} (${statusText(p.status)}, ${p.daysLate} days late).`,
-    ),
-  });
-  if (topic === "delay") {
-    const explanation = p.daysLate > 0 && p.delayCauses.length ? await explainDelay(p) : null;
-    return ctx.out.reply(projectDelayReply(p, explanation));
-  }
-  return ctx.out.reply(projectOverviewReply(p, await summarizeProject(p)));
-}
-
-/** For the "Details" and "Why is it late?" buttons, whose value is the project id. */
-export async function showProjectById(
-  ctx: Ctx,
-  id: string,
-  topic: "overview" | "delay",
-): Promise<void> {
-  const p = loadProjects().find((x) => x.data.id === id);
-  if (!p) return ctx.out.reply({ text: "That project no longer exists in data/projects/." });
-  await showProject(ctx, p, topic);
+  if (HELP.test(text)) return ctx.out.reply(helpReply(ctx.mode));
+  await startMission(ctx, text);
 }
 
 /**
@@ -379,8 +195,11 @@ export type Started<R> =
  * Options for jobs started by the agent:
  * - persist: false skips saving the job for a restart. The agent's mission
  *   is saved instead and starts the job again itself after a restart.
+ * - remember: false leaves the conversation's selected lot and latest plan
+ *   alone. The agent names properties itself, and may design several lots
+ *   without recommending the last one.
  */
-export type QueueOpts = { persist?: boolean };
+export type QueueOpts = { persist?: boolean; remember?: boolean };
 
 /** Post the refusal (if any) and don't wait for the job; used by messages and buttons. */
 async function postRefusal(ctx: Ctx, started: Started<unknown>): Promise<void> {
@@ -535,8 +354,9 @@ export async function queueDesign(
   const found = listingFor(getSession(key), ref);
   if ("reply" in found) return { ok: false, reply: found.reply };
   const { listing } = found;
+  const remember = opts?.remember ?? true;
 
-  await updateSession(key, { selected: listing });
+  if (remember) await updateSession(key, { selected: listing });
   return queueJob(
     ctx,
     {
@@ -548,7 +368,7 @@ export async function queueDesign(
       work: async (step) => {
         const result = await designHouse(listing, lotText, step);
         // Remember the plan folder: estimates and timelines build on it.
-        await updateSession(key, { planDir: result.dir });
+        if (remember) await updateSession(key, { planDir: result.dir });
         await out.reply(designDoneReply(listing, result));
         await out.upload(
           [
@@ -580,7 +400,7 @@ export type PlanRef = { planDir?: string; url?: string; name?: string };
  *                   the job waits for it and looks the plan up when it starts.
  */
 /** The jobs that work on an existing plan. */
-type PlanJob = "estimate" | "timeline" | "feasibility";
+type PlanJob = "estimate" | "timeline" | "feasibility" | "interior";
 
 type PlanTarget =
   | { kind: "ready"; planDir: string; listing: Listing }
@@ -844,19 +664,65 @@ export async function queueTimeline(
 }
 
 /**
+ * Start the furnished 3D floor views. Used by "3D interior for 3218 Brass
+ * Buttons Trl", "show me the inside" (latest plan here) and the "3D interior"
+ * button under a finished plan.
+ */
+export async function startInterior(ctx: Ctx, ref: PlanRef = {}): Promise<void> {
+  await postRefusal(ctx, await queueInterior(ctx, ref));
+}
+
+export async function queueInterior(
+  ctx: Ctx,
+  ref: PlanRef = {},
+  opts?: QueueOpts,
+): Promise<Started<InteriorResult>> {
+  const target = planFor(ctx, ref, "interior");
+  if ("reply" in target) return { ok: false, reply: target.reply };
+  const queuedAt = Date.now();
+
+  return queueJob(
+    ctx,
+    {
+      kind: "interior",
+      listing: target.listing,
+      saved: { planDir: target.kind === "ready" ? target.planDir : undefined },
+      models: [DESIGN_MODEL],
+      title: interiorTitle(street(target.listing)),
+      note: dependencyNote(target, "interior"),
+      work: async (step) => {
+        const planDir = resolvePlanDir(target, queuedAt, "furnish");
+        const result = await designInterior(planDir, step);
+        await ctx.out.reply(interiorDoneReply(result));
+        await ctx.out.upload(
+          [{ path: result.pdfPath, title: "3D interior views (PDF)" }],
+          "One furnished 3D top view per floor.",
+        );
+        return result;
+      },
+    },
+    opts,
+  );
+}
+
+/**
  * Called once when the bot starts. Jobs still saved in a conversation's
  * memory were interrupted by a restart (jobs are removed when they end), so
  * say so and queue them again with the same inputs, in the order they were
  * asked for (so a design comes before the estimate waiting for it).
  *
- * `makeCtx` builds the Ctx for a conversation; src/slack.ts supplies one that
- * posts to Slack.
+ * `makeCtx` builds the Ctx for a conversation (src/main.ts supplies one that
+ * posts to Slack or the web chat). Conversations `keep` rejects are left
+ * alone, e.g. Slack ones when Slack isn't running.
  */
-export async function resumeJobs(makeCtx: (key: string, user: string) => Ctx): Promise<number> {
+export async function resumeJobs(
+  makeCtx: (key: string, user: string) => Ctx,
+  keep: (key: string) => boolean = () => true,
+): Promise<number> {
   let count = 0;
   for (const [key, session] of allSessions()) {
     const jobs = session.jobs ?? [];
-    if (!jobs.length) continue;
+    if (!jobs.length || !keep(key)) continue;
     await updateSession(key, { jobs: [] });
     for (const job of jobs) {
       count++;
@@ -872,6 +738,7 @@ export async function resumeJobs(makeCtx: (key: string, user: string) => Ctx): P
           await startDesign(ctx, { url: job.listing?.url }, job.lotText ?? "");
         } else if (job.kind === "estimate") await startEstimate(ctx, ref);
         else if (job.kind === "feasibility") await startFeasibility(ctx, ref);
+        else if (job.kind === "interior") await startInterior(ctx, ref);
         else await startTimeline(ctx, job.startText ?? "", ref);
       } catch (err) {
         // E.g. the bot was removed from that channel; skip it rather than crash at startup.

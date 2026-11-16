@@ -1,6 +1,6 @@
 /**
  * Console test for the agent, without Slack. Messages go through the same
- * path as in Slack (router -> agent), and everything the bot would post is
+ * path as in Slack (handleMessage), and everything the bot would post is
  * printed instead. It uses its own memory files in /tmp, so it never touches
  * the bot's real conversations.
  *
@@ -93,7 +93,7 @@ async function runGoal(goal: string, key: string, digest = false): Promise<void>
     .filter((m) => m.key === key && Date.parse(m.createdAt) >= started)
     .at(-1);
   if (!mission) {
-    console.log("\n  (The router didn't treat this as a goal; no mission was started.)");
+    console.log("\n  (Answered without the agent: help or cancel.)");
     return;
   }
   let answered = false;

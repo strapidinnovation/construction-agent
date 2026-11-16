@@ -1,0 +1,354 @@
+[
+  {
+    "id": "eastside-design-studio",
+    "name": "Eastside Design Studio",
+    "type": "consultant",
+    "trade": "Architecture & permit drawings",
+    "stages": ["pre-construction", "permitting"],
+    "contact": {
+      "name": "Hannah Cole",
+      "phone": "(512) 555-0141",
+      "email": "hannah@eastsidedesign.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": "TBAE-28841",
+    "insuranceExpires": "2027-05-31",
+    "rating": 4,
+    "status": "active",
+    "notes": "Drew the Blessing Ave triplex. Good with City of Austin reviewers, but revisions can take a week.",
+    "createdAt": "2026-01-12T15:00:00.000Z",
+    "updatedAt": "2026-10-09T15:00:00.000Z"
+  },
+  {
+    "id": "bluebonnet-engineering",
+    "name": "Bluebonnet Engineering",
+    "type": "consultant",
+    "trade": "Civil & structural engineering",
+    "stages": ["pre-construction", "permitting", "site-prep", "foundation"],
+    "contact": {
+      "name": "Raj Mehta",
+      "phone": "(512) 555-0177",
+      "email": "raj@bluebonnet-eng.example"
+    },
+    "serviceArea": "Central Texas",
+    "licenseNumber": "TBPE-F-19022",
+    "insuranceExpires": "2027-02-28",
+    "rating": 5,
+    "status": "active",
+    "notes": "Drainage plans, foundation design and engineer letters. Fast turnaround on permit comments.",
+    "createdAt": "2026-01-12T15:00:00.000Z",
+    "updatedAt": "2026-09-30T15:00:00.000Z"
+  },
+  {
+    "id": "permitpro-expediting",
+    "name": "PermitPro Expediting",
+    "type": "consultant",
+    "trade": "Permit expediting",
+    "stages": ["permitting"],
+    "contact": {
+      "name": "Laura Kim",
+      "phone": "(512) 555-0110",
+      "email": "laura@permitpro.example"
+    },
+    "serviceArea": "Austin, Round Rock, Pflugerville",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-01-15",
+    "rating": 4,
+    "status": "active",
+    "notes": "Tracks submittals and chases reviewers. Worth it on multi-unit permits.",
+    "createdAt": "2026-02-03T15:00:00.000Z",
+    "updatedAt": "2026-02-03T15:00:00.000Z"
+  },
+  {
+    "id": "hill-country-earthworks",
+    "name": "Hill Country Earthworks",
+    "type": "subcontractor",
+    "trade": "Clearing, excavation & grading",
+    "stages": ["site-prep", "exterior"],
+    "contact": {
+      "name": "Cody Barnes",
+      "phone": "(512) 555-0193",
+      "email": "cody@hcearthworks.example"
+    },
+    "serviceArea": "Travis, Hays and Williamson counties",
+    "licenseNumber": null,
+    "insuranceExpires": "2026-12-31",
+    "rating": 4,
+    "status": "active",
+    "notes": "Has its own excavators and a rock hammer for limestone lots. Insurance renews at year end.",
+    "createdAt": "2026-01-20T15:00:00.000Z",
+    "updatedAt": "2026-08-14T15:00:00.000Z"
+  },
+  {
+    "id": "capitol-concrete",
+    "name": "Capitol Concrete",
+    "type": "subcontractor",
+    "trade": "Concrete & foundations",
+    "stages": ["foundation", "exterior"],
+    "contact": {
+      "name": "Miguel Santos",
+      "phone": "(512) 555-0122",
+      "email": "miguel@capitolconcrete.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-03-31",
+    "rating": 3,
+    "status": "active",
+    "notes": "Slabs, piers, driveways and flatwork. Failed one rebar inspection this year; recheck spacing before pours.",
+    "createdAt": "2026-01-12T15:00:00.000Z",
+    "updatedAt": "2026-10-02T15:00:00.000Z"
+  },
+  {
+    "id": "lone-star-framing",
+    "name": "Lone Star Framing Co.",
+    "type": "subcontractor",
+    "trade": "Framing",
+    "stages": ["framing", "dry-in"],
+    "contact": { "name": "Tom Reyes", "phone": "(512) 555-0158", "email": "tom@lsframing.example" },
+    "serviceArea": "Austin metro",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-04-30",
+    "rating": 4,
+    "status": "active",
+    "notes": "Crews of 6 to 8. Can frame two homes at once.",
+    "createdAt": "2026-01-15T15:00:00.000Z",
+    "updatedAt": "2026-07-21T15:00:00.000Z"
+  },
+  {
+    "id": "central-texas-truss",
+    "name": "Central Texas Truss & Lumber",
+    "type": "supplier",
+    "trade": "Lumber, roof & floor trusses",
+    "stages": ["framing"],
+    "contact": {
+      "name": "Dana Wright",
+      "phone": "(512) 555-0186",
+      "email": "orders@cttruss.example"
+    },
+    "serviceArea": "Central Texas (delivery)",
+    "licenseNumber": null,
+    "insuranceExpires": null,
+    "rating": 3,
+    "status": "active",
+    "notes": "Trusses running 3 to 4 weeks this fall. Order as soon as the framing plan is final.",
+    "createdAt": "2026-01-15T15:00:00.000Z",
+    "updatedAt": "2026-11-02T15:00:00.000Z"
+  },
+  {
+    "id": "summit-roofing",
+    "name": "Summit Roofing",
+    "type": "subcontractor",
+    "trade": "Roofing",
+    "stages": ["dry-in", "exterior"],
+    "contact": {
+      "name": "Brent Hall",
+      "phone": "(512) 555-0134",
+      "email": "brent@summitroofing.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-06-30",
+    "rating": 5,
+    "status": "active",
+    "notes": "Shingle and standing-seam metal. Usually dries in a house in two days.",
+    "createdAt": "2026-02-10T15:00:00.000Z",
+    "updatedAt": "2026-02-10T15:00:00.000Z"
+  },
+  {
+    "id": "clearview-windows",
+    "name": "ClearView Windows & Doors",
+    "type": "supplier",
+    "trade": "Windows & exterior doors",
+    "stages": ["dry-in"],
+    "contact": {
+      "name": "Erin Park",
+      "phone": "(512) 555-0169",
+      "email": "erin@clearview.example"
+    },
+    "serviceArea": "Central Texas (delivery and install)",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-02-28",
+    "rating": 4,
+    "status": "active",
+    "notes": "Energy Star vinyl and aluminum-clad windows. Six-week lead time on custom sizes.",
+    "createdAt": "2026-02-10T15:00:00.000Z",
+    "updatedAt": "2026-06-05T15:00:00.000Z"
+  },
+  {
+    "id": "austin-pro-plumbing",
+    "name": "Austin Pro Plumbing",
+    "type": "subcontractor",
+    "trade": "Plumbing",
+    "stages": ["foundation", "rough-ins", "final-installs"],
+    "contact": {
+      "name": "Victor Nunez",
+      "phone": "(512) 555-0105",
+      "email": "victor@austinproplumbing.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": "M-40217",
+    "insuranceExpires": "2027-03-15",
+    "rating": 4,
+    "status": "active",
+    "notes": "Underslab plumbing before the pour, top-out at rough-ins, fixtures at final.",
+    "createdAt": "2026-01-18T15:00:00.000Z",
+    "updatedAt": "2026-05-12T15:00:00.000Z"
+  },
+  {
+    "id": "bright-spark-electric",
+    "name": "Bright Spark Electric",
+    "type": "subcontractor",
+    "trade": "Electrical",
+    "stages": ["site-prep", "rough-ins", "final-installs"],
+    "contact": {
+      "name": "Nina Patel",
+      "phone": "(512) 555-0147",
+      "email": "nina@brightspark.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": "TECL-31876",
+    "insuranceExpires": "2027-01-31",
+    "rating": 5,
+    "status": "active",
+    "notes": "Handles temporary power and the Austin Energy service application.",
+    "createdAt": "2026-01-18T15:00:00.000Z",
+    "updatedAt": "2026-10-14T15:00:00.000Z"
+  },
+  {
+    "id": "coolbreeze-mechanical",
+    "name": "CoolBreeze Mechanical",
+    "type": "subcontractor",
+    "trade": "HVAC",
+    "stages": ["rough-ins", "final-installs"],
+    "contact": {
+      "name": "Greg Lopez",
+      "phone": "(512) 555-0171",
+      "email": "greg@coolbreeze.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": "TACLA-88214C",
+    "insuranceExpires": "2026-11-30",
+    "rating": 3,
+    "status": "active",
+    "notes": "Ductwork and heat pumps. Missed one rough-in date in September. Insurance expires this month: ask for the renewal.",
+    "createdAt": "2026-01-22T15:00:00.000Z",
+    "updatedAt": "2026-09-19T15:00:00.000Z"
+  },
+  {
+    "id": "texas-insulation-drywall",
+    "name": "Texas Insulation & Drywall",
+    "type": "subcontractor",
+    "trade": "Insulation & drywall",
+    "stages": ["insulation-drywall"],
+    "contact": {
+      "name": "Sam Ortiz",
+      "phone": "(512) 555-0116",
+      "email": "sam@txinsdrywall.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-05-15",
+    "rating": 4,
+    "status": "active",
+    "notes": "Spray foam and batts, hang, tape and texture.",
+    "createdAt": "2026-02-01T15:00:00.000Z",
+    "updatedAt": "2026-02-01T15:00:00.000Z"
+  },
+  {
+    "id": "stonecrest-masonry",
+    "name": "Stonecrest Masonry & Siding",
+    "type": "subcontractor",
+    "trade": "Masonry, siding & exterior paint",
+    "stages": ["exterior"],
+    "contact": {
+      "name": "Paul Becker",
+      "phone": "(512) 555-0152",
+      "email": "paul@stonecrest.example"
+    },
+    "serviceArea": "Austin and Hill Country",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-04-01",
+    "rating": 4,
+    "status": "active",
+    "notes": "Limestone veneer, fiber-cement siding and exterior paint.",
+    "createdAt": "2026-02-14T15:00:00.000Z",
+    "updatedAt": "2026-02-14T15:00:00.000Z"
+  },
+  {
+    "id": "artisan-interiors",
+    "name": "Artisan Interiors",
+    "type": "subcontractor",
+    "trade": "Cabinets, trim, flooring & interior paint",
+    "stages": ["interior-finishes"],
+    "contact": {
+      "name": "Claire Dubois",
+      "phone": "(512) 555-0198",
+      "email": "claire@artisaninteriors.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-03-01",
+    "rating": 5,
+    "status": "active",
+    "notes": "One crew for all interior finishes, so fewer handoffs.",
+    "createdAt": "2026-02-20T15:00:00.000Z",
+    "updatedAt": "2026-08-01T15:00:00.000Z"
+  },
+  {
+    "id": "granite-city-countertops",
+    "name": "Granite City Countertops",
+    "type": "supplier",
+    "trade": "Countertops (fabricate and install)",
+    "stages": ["interior-finishes", "final-installs"],
+    "contact": {
+      "name": "Omar Haddad",
+      "phone": "(512) 555-0125",
+      "email": "omar@granitecity.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": null,
+    "insuranceExpires": "2027-02-15",
+    "rating": 4,
+    "status": "active",
+    "notes": "Templates the day cabinets are set; installs about 10 days later.",
+    "createdAt": "2026-02-20T15:00:00.000Z",
+    "updatedAt": "2026-02-20T15:00:00.000Z"
+  },
+  {
+    "id": "green-acres-landscaping",
+    "name": "Green Acres Landscaping",
+    "type": "subcontractor",
+    "trade": "Landscaping & irrigation",
+    "stages": ["exterior", "closeout"],
+    "contact": {
+      "name": "Ana Flores",
+      "phone": "(512) 555-0163",
+      "email": "ana@greenacres.example"
+    },
+    "serviceArea": "Austin metro",
+    "licenseNumber": "LI-0021563",
+    "insuranceExpires": "2027-01-10",
+    "rating": 4,
+    "status": "active",
+    "notes": "Sod, native beds and drip irrigation; meets the City's landscape requirements.",
+    "createdAt": "2026-03-02T15:00:00.000Z",
+    "updatedAt": "2026-03-02T15:00:00.000Z"
+  },
+  {
+    "id": "spotless-final-clean",
+    "name": "Spotless Final Clean",
+    "type": "subcontractor",
+    "trade": "Construction cleaning",
+    "stages": ["closeout"],
+    "contact": { "name": "Joy Turner", "phone": "(512) 555-0108", "email": "joy@spotless.example" },
+    "serviceArea": "Austin metro",
+    "licenseNumber": null,
+    "insuranceExpires": "2026-08-31",
+    "rating": 2,
+    "status": "inactive",
+    "notes": "Stopped using them after two missed walkthroughs. Insurance has lapsed.",
+    "createdAt": "2026-03-05T15:00:00.000Z",
+    "updatedAt": "2026-09-01T15:00:00.000Z"
+  }
+]

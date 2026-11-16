@@ -136,6 +136,74 @@
       "percent": 100
     }
   ],
+  "vendors": [
+    {
+      "vendorId": "hill-country-earthworks",
+      "stages": ["site-prep"],
+      "scope": "Clearing and grading",
+      "contractUsd": 12000
+    },
+    {
+      "vendorId": "capitol-concrete",
+      "stages": ["foundation"],
+      "scope": "Slab",
+      "contractUsd": 36000
+    },
+    {
+      "vendorId": "lone-star-framing",
+      "stages": ["framing", "dry-in"],
+      "scope": "Framing and sheathing",
+      "contractUsd": 47000
+    },
+    {
+      "vendorId": "clearview-windows",
+      "stages": ["dry-in"],
+      "scope": "Windows and exterior doors",
+      "contractUsd": 16500
+    },
+    {
+      "vendorId": "summit-roofing",
+      "stages": ["dry-in"],
+      "scope": "Shingle roof",
+      "contractUsd": 15500
+    },
+    {
+      "vendorId": "austin-pro-plumbing",
+      "stages": ["foundation", "rough-ins", "final-installs"],
+      "scope": "Underslab, top-out and fixtures",
+      "contractUsd": 21000
+    },
+    {
+      "vendorId": "bright-spark-electric",
+      "stages": ["rough-ins", "final-installs"],
+      "scope": "Wiring and fixtures",
+      "contractUsd": 19500
+    },
+    {
+      "vendorId": "texas-insulation-drywall",
+      "stages": ["insulation-drywall"],
+      "scope": "Insulation and drywall",
+      "contractUsd": 22000
+    },
+    {
+      "vendorId": "artisan-interiors",
+      "stages": ["interior-finishes"],
+      "scope": "Cabinets, trim, flooring and paint",
+      "contractUsd": 39000
+    },
+    {
+      "vendorId": "green-acres-landscaping",
+      "stages": ["exterior", "closeout"],
+      "scope": "Sod, beds and irrigation",
+      "contractUsd": 11000
+    },
+    {
+      "vendorId": "spotless-final-clean",
+      "stages": ["closeout"],
+      "scope": "Final clean before handover",
+      "contractUsd": 2400
+    }
+  ],
   "issues": [
     {
       "id": "HB-01",

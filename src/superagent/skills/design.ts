@@ -7,8 +7,10 @@
  *
  *   1. Lot size     - from the listing, or what the user typed ("60x150",
  *                     "7500 sq ft"); otherwise an 8,000 sq ft assumption.
- *   2. Zoning rules - looked up from the city's zoning map when available
- *                     (Austin, TX today); otherwise typical residential defaults.
+ *   2. Site rules   - researched on the web from official sources (zoning
+ *                     district, setbacks, which housing types are allowed,
+ *                     overlays, state laws); gaps and failures fall back to
+ *                     typical residential defaults (siteRules.ts).
  *   3. Site plan    - the site planner agent decides how many homes fit and
  *                     what each one is (bedrooms, size, stories).
  *   4. Drawing      - the house designer agent draws the site plan and floor
@@ -21,7 +23,8 @@
 import * as houseDesigner from "../../agents/houseDesigner.ts";
 import type { Listing } from "../../agents/landSearch.ts";
 import * as sitePlanner from "../../agents/sitePlanner.ts";
-import { DEFAULT_RULES, lookupZoning, userRules, type ZoningRules } from "../../agents/zoning.ts";
+import { researchSiteRules } from "../../agents/siteRules.ts";
+import { DEFAULT_RULES, userRules, type ZoningRules } from "../../agents/zoning.ts";
 import { refreshReports } from "../../refreshReports.ts";
 import { printPdf, screenshotSvg } from "../render.ts";
 
@@ -50,7 +53,7 @@ export type DesignResult = {
 
 /**
  * Work out the lot's width and depth.
- * `lotText` is what the router pulled out of the message: "60x150", "7500" or "".
+ * `lotText` is the lot size the user gave: "60x150", "7500" or "".
  */
 export function resolveLot(
   listing: Listing,
@@ -80,17 +83,17 @@ export function resolveLot(
   };
 }
 
-/** Find the zoning rules, falling back to common residential defaults. */
+/** Research the site rules, falling back to common residential defaults. */
 async function resolveRules(
   listing: Listing,
 ): Promise<{ rules: ZoningRules; found: boolean; note: string }> {
-  const lookup = await lookupZoning(listing);
-  if (lookup.kind === "found") return { rules: lookup.rules, found: true, note: "" };
-  const note =
-    lookup.kind === "unsupported-district"
-      ? `it is zoned ${lookup.district}, which isn't a residential district I have rules for`
-      : "I have no zoning data for this location (it may be outside city limits)";
-  return { rules: userRules(DEFAULT_RULES), found: false, note };
+  const result = await researchSiteRules(listing);
+  if (result.kind === "found") return { rules: result.rules, found: true, note: "" };
+  return {
+    rules: userRules(DEFAULT_RULES),
+    found: false,
+    note: `the site rules research failed (${result.reason})`,
+  };
 }
 
 export async function designHouse(
@@ -103,7 +106,7 @@ export async function designHouse(
 
   const { lot, note: lotNote } = resolveLot(listing, lotText);
 
-  onStep("Checking the zoning rules…");
+  onStep("Researching the zoning and building rules for this land (1–8 minutes)…");
   const { rules, found: zoningFound, note: zoningNote } = await resolveRules(listing);
 
   onStep("Deciding how many homes fit and what each one should be…");

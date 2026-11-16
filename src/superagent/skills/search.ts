@@ -18,7 +18,7 @@ export type SearchResult =
 /**
  * Search for land in `city` within `budget`.
  *
- * `budget` is the text form produced by the router ("300k", "200k-350k",
+ * `budget` is the text form the agent sends ("300k", "200k-350k",
  * "under 400k"). parseBudget turns it into a price range; "300k" means "around
  * 300k" and becomes roughly $255k to $345k.
  */

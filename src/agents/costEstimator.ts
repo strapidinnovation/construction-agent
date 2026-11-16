@@ -490,12 +490,12 @@ function tradeDetails(t: TradeEstimate): string {
   return (
     `<details open><summary><span class="title">${esc(t.name)}</span>` +
     `<span class="meta">${t.materials.length} items · ${usd(t.materialsUsd + t.laborUsd)}</span></summary>` +
-    `<div class="content"><h4>Materials</h4><div class="table-scroll"><table>` +
-    `<tr><th>Item</th><th>Specification</th><th class="num">Qty</th><th>Unit</th><th class="num">Unit cost</th>` +
-    `<th class="num">Total</th><th>Notes</th></tr>${materials}` +
+    `<div class="content"><h4>Materials</h4><div class="table-scroll"><table class="lines">` +
+    `<thead><tr><th>Item</th><th>Specification</th><th class="num">Qty</th><th>Unit</th><th class="num">Unit cost</th>` +
+    `<th class="num">Total</th><th>Notes</th></tr></thead>${materials}` +
     `<tr class="total"><td colspan="5">Materials subtotal</td><td class="num">${usd(t.materialsUsd)}</td><td></td></tr>` +
     `</table></div><h4>Labor</h4><div class="table-scroll"><table>` +
-    `<tr><th>Task</th><th class="num">Crew hours</th><th class="num">Rate</th><th class="num">Total</th></tr>${labor}` +
+    `<thead><tr><th>Task</th><th class="num">Crew hours</th><th class="num">Rate</th><th class="num">Total</th></tr></thead>${labor}` +
     `<tr class="total"><td colspan="3">Labor subtotal</td><td class="num">${usd(t.laborUsd)}</td></tr>` +
     `</table></div></div></details>`
   );
@@ -606,8 +606,13 @@ function toHtml(e: Estimate): string {
   return page({
     dir: e.planDir,
     file: "materials.html",
-    title: "Material & Cost Estimate",
-    subtitle: `${esc(e.location)} · estimated by ${esc(e.model)}`,
+    kind: "Material and cost estimate",
+    title: e.location,
+    meta: [
+      ["Homes", String(e.homes)],
+      ["Heated area", `${qty(e.heatedSqft)} sq ft`],
+      ["Estimated by", e.model],
+    ],
     body,
   });
 }

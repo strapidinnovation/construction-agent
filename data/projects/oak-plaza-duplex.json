@@ -117,6 +117,62 @@
       "percent": 0
     }
   ],
+  "vendors": [
+    {
+      "vendorId": "bluebonnet-engineering",
+      "stages": ["pre-construction", "foundation"],
+      "scope": "Foundation design",
+      "contractUsd": 12500
+    },
+    {
+      "vendorId": "hill-country-earthworks",
+      "stages": ["site-prep"],
+      "scope": "Clearing and grading",
+      "contractUsd": 21000
+    },
+    {
+      "vendorId": "capitol-concrete",
+      "stages": ["foundation"],
+      "scope": "Slabs for both units",
+      "contractUsd": 58000
+    },
+    {
+      "vendorId": "lone-star-framing",
+      "stages": ["framing", "dry-in"],
+      "scope": "Framing and sheathing",
+      "contractUsd": 71000
+    },
+    {
+      "vendorId": "central-texas-truss",
+      "stages": ["framing"],
+      "scope": "Lumber package and roof trusses",
+      "contractUsd": 23000
+    },
+    {
+      "vendorId": "summit-roofing",
+      "stages": ["dry-in"],
+      "scope": "Standing-seam metal roof",
+      "contractUsd": 24000
+    },
+    {
+      "vendorId": "austin-pro-plumbing",
+      "stages": ["foundation", "rough-ins", "final-installs"],
+      "scope": "Underslab, top-out and fixtures",
+      "contractUsd": 33000
+    },
+    {
+      "vendorId": "bright-spark-electric",
+      "stages": ["rough-ins", "final-installs"],
+      "scope": "Wiring and fixtures",
+      "contractUsd": 31000
+    },
+    {
+      "vendorId": "coolbreeze-mechanical",
+      "stages": ["rough-ins", "final-installs"],
+      "scope": "Ductwork and heat pumps",
+      "contractUsd": 29000
+    }
+  ],
   "issues": [
     {
       "id": "OP-01",
